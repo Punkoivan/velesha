@@ -9,8 +9,9 @@ voice + avatar later.
 Index life data sources into Qdrant, searchable semantically.
 
 - [x] Obsidian recipes (`sources/obsidian/`) — see ADR-0002, ADR-0003
-- [ ] Home Assistant history (`sources/home_assistant/`) — via HA REST API
-      (`/api/history/period`), long-lived access token
+- [x] Home Assistant history (`sources/home_assistant/`) — via HA REST API
+      (`/api/history/period`), long-lived access token (ADR-0005 for how
+      it's stored); textified events per ADR-0004
 - [ ] Jellyfin library + watch stats (`sources/jellyfin/`) — via Jellyfin API
 
 ### Phase 2 — Recall

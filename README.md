@@ -11,8 +11,9 @@ why things are built the way they are — start with
 
 ## Status
 
-Phase 1 (Memory): Obsidian recipes indexed and searchable. See
-[`sources/obsidian/`](sources/obsidian/).
+Phase 1 (Memory): Obsidian recipes and Home Assistant history indexed and
+searchable. See [`sources/obsidian/`](sources/obsidian/) and
+[`sources/home_assistant/`](sources/home_assistant/). Jellyfin next.
 
 ## Stack
 
@@ -20,6 +21,8 @@ Phase 1 (Memory): Obsidian recipes indexed and searchable. See
   [ADR-0002](docs/adr/0002-local-embeddings-via-llamacpp.md)
 - Vector store: Qdrant, one collection per source —
   [ADR-0003](docs/adr/0003-qdrant-as-vector-store.md)
+- Secrets: SOPS + age, encrypted files committed, no plaintext `.env` —
+  [ADR-0005](docs/adr/0005-secrets-via-sops-age.md)
 
 ## Running it
 
