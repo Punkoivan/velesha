@@ -75,6 +75,14 @@ Both sources re-indexed and verified working there.
   Qdrant payload filter on keyword, or a Tandoor API query by keyword,
   would give exact "only recipes I can make with X" filtering if that's
   ever needed instead of fuzzy relevance.
+- **Cross-conversation memory for `conversation.velesha`** — right now
+  `api/` is stateless per request; within one HA conversation turn HA
+  resends the full transcript so the chat model has short-term memory,
+  but retrieval only ever runs against the latest user message, not the
+  conversation so far ("а скільки там калорій" without repeating the
+  recipe name won't retrieve the right one), and nothing persists once a
+  conversation ends. Deliberately deferred — revisit retrieval-with-
+  conversation-context and any longer-term memory together.
 
 ## Notes
 
