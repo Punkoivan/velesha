@@ -29,15 +29,13 @@ of duplicating them.
   `abox`) — cleaner separation from the course cluster, but the course
   cluster is already up and this is meant to be validated end-to-end first;
   revisit once `abox` stops being a dependency Velesha shouldn't have.
-- **One shared collection with a `source` payload field** — simpler to
+- **One shared collection with a `source` payload field** ß simpler to
   query "across everything," but couples every source to the same vector
   size and payload shape. Rejected for now; can still build a
   cross-collection search later without this.
 
 ## Consequences
 
-- Velesha currently has a soft runtime dependency on the `abox` cluster
-  being up and port-forwarded. This is a known temporary coupling, not a
-  design goal — worth a follow-up ADR when it's time to decouple.
+- Velesha currently has a soft runtime dependency on the `abox` cluster   being up and port-forwarded. This is a known temporary coupling, not a  design goal - worth a follow-up ADR when it's time to decouple.
 - Adding a new source means: new collection, new ingest script, same
   embedding pipeline.
