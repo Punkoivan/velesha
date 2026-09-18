@@ -30,6 +30,7 @@ CHAT_URL = os.environ.get("CHAT_URL", "http://localhost:8084/v1/chat/completions
 # see ADR-0015 — the collection still exists in Qdrant but is stale.
 COLLECTIONS = ["ha_history", "jellyfin_library", "tandoor_recipes"]
 CHUNKS_PER_COLLECTION = 4  # see ADR-0016 — per collection, not a global cap
+CANDIDATE_POOL = 20  # see ADR-0017 — wider semantic net before picking by recency
 MAX_CHUNK_CHARS = 600  # see ADR-0010 — keeps the chat model's context from overflowing
 
 SYSTEM_PROMPT = (
@@ -71,9 +72,20 @@ def retrieve_context(query: str) -> str:
     for collection in COLLECTIONS:
         if not client.collection_exists(collection):
             continue
+        # Fetch a wider candidate pool than we'll actually use: ha_history
+        # entries for one entity are near-duplicate text ("телевізор:
+        # [у]вимкнено о HH:MM, DD.MM.YYYY"), so the true most recent event
+        # isn't reliably inside a narrow top-K by cosine score alone
+        # (confirmed in testing — it was missing from the top 4 outright).
+        # Casting a wider net and then picking by actual timestamp fixes
+        # that; harmless for collections without a timestamp payload field,
+        # where the pool just gets truncated back to CHUNKS_PER_COLLECTION
+        # in score order same as before. See ADR-0017.
         results = client.query_points(
-            collection_name=collection, query=vector, limit=CHUNKS_PER_COLLECTION, with_payload=True
+            collection_name=collection, query=vector, limit=CANDIDATE_POOL, with_payload=True
         ).points
+        results = sorted(results, key=lambda r: r.payload.get("last_changed") or "", reverse=True)
+        results = results[:CHUNKS_PER_COLLECTION]
         for r in results:
             text = " ".join(r.payload.get("text", "").split())[:MAX_CHUNK_CHARS]
             lines.append(f"[{collection}] {text}")

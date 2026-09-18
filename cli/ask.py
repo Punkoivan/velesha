@@ -22,7 +22,26 @@ SYSTEM_PROMPT = (
 )
 
 
-MAX_CHUNK_CHARS = 600  # keeps a few chunks + question well under the 4096-token chat context
+MAX_CHUNK_CHARS = 600  # keeps a few chunks + question well under the 8192-token chat context
+CANDIDATE_POOL = 20  # see ADR-0017 — wider semantic net before picking by recency
+
+
+def pick_chunks(hits: list[dict], collections: list[str], per_collection: int) -> list[dict]:
+    # ha_history entries for one entity are near-duplicate text
+    # ("телевізор: [у]вимкнено о HH:MM, DD.MM.YYYY"), so the true most
+    # recent event isn't reliably inside a narrow top-K by cosine score
+    # alone (confirmed in testing — it was missing outright). search_all
+    # was called with a wide CANDIDATE_POOL; here we pick, per collection,
+    # the per_collection most recent by timestamp (ha_history's
+    # last_changed) where present, else the top by score (stable sort,
+    # missing timestamp treated as empty — same order Qdrant returned).
+    # See ADR-0017.
+    picked = []
+    for collection in collections:
+        group = [h for h in hits if h["collection"] == collection]
+        group.sort(key=lambda h: h["payload"].get("last_changed") or "", reverse=True)
+        picked.extend(group[:per_collection])
+    return picked
 
 
 def build_context(hits: list[dict]) -> str:
@@ -72,7 +91,8 @@ def main() -> None:
     # broad recipe question loses recipe results to unrelated but
     # higher-scoring hits from other collections (e.g. HA history events
     # mentioning "духовка" outscoring actual baking recipes). See ADR-0016.
-    hits = search_all(client, vector, collections, per_collection=args.chunks)
+    pool = search_all(client, vector, collections, per_collection=CANDIDATE_POOL)
+    hits = pick_chunks(pool, collections, per_collection=args.chunks)
 
     if not hits:
         print("Нічого релевантного не знайдено в жодній колекції.")
