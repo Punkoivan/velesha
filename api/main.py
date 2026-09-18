@@ -83,7 +83,7 @@ def retrieve_context(query: str) -> str:
 
 class ChatMessage(BaseModel):
     role: str
-    content: str
+    content: str | None = None
 
 
 class ChatCompletionRequest(BaseModel):
@@ -115,13 +115,15 @@ def list_models():
 @app.post("/v1/chat/completions")
 def chat_completions(req: ChatCompletionRequest):
     user_messages = [m for m in req.messages if m.role == "user"]
-    question = user_messages[-1].content if user_messages else ""
+    question = (user_messages[-1].content or "") if user_messages else ""
 
     context = retrieve_context(question)
     augmented_system = f"{SYSTEM_PROMPT}\n\nКонтекст:\n{context}" if context else SYSTEM_PROMPT
 
     upstream_messages = [{"role": "system", "content": augmented_system}]
-    upstream_messages += [{"role": m.role, "content": m.content} for m in req.messages if m.role != "system"]
+    upstream_messages += [
+        {"role": m.role, "content": m.content or ""} for m in req.messages if m.role != "system"
+    ]
 
     payload = {
         "messages": upstream_messages,
