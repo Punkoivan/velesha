@@ -24,6 +24,12 @@ One search surface across all sources, not per-source scripts.
       ADR-0010
 
 ### Phase 3 — Interface
+- [x] OpenAI-compatible API (`api/`) — retrieval-grounded
+      `/v1/chat/completions`, the integration point for HA's built-in
+      "OpenAI Conversation" integration — see ADR-0011
+- [ ] Wire it into Home Assistant (add the integration, point it at this
+      host; close the streaming/system-prompt gaps noted in
+      `api/README.md` if Assist needs them)
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar
