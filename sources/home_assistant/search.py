@@ -1,17 +1,27 @@
 """Semantic search over indexed Home Assistant history.
 
-Usage:
-    uv run search.py "коли я востаннє вмикав опалення"
+Usage (needs the shared Qdrant secret, not the HA one — search doesn't
+call the HA API):
+    sops exec-env ../../secrets.enc.env 'uv run search.py "коли я востаннє вмикав опалення"'
 """
 
+import os
 import sys
 
 import requests
 from qdrant_client import QdrantClient
 
 EMBED_URL = "http://localhost:8081/embedding"
-QDRANT_URL = "http://localhost:6333"
 COLLECTION = "ha_history"
+
+
+def qdrant_client() -> QdrantClient:
+    """See ADR-0006: shared ha-addon-qdrant instance, not abox."""
+    url = os.environ.get("QDRANT_URL", "http://localhost:6333")
+    kwargs = {}
+    if api_key := os.environ.get("QDRANT_API_KEY"):
+        kwargs["api_key"] = api_key
+    return QdrantClient(url=url, **kwargs)
 
 
 def embed(text: str) -> list[float]:
@@ -29,7 +39,7 @@ def main() -> None:
         sys.exit(1)
 
     query = " ".join(sys.argv[1:])
-    client = QdrantClient(url=QDRANT_URL)
+    client = qdrant_client()
     vector = embed(query)
 
     results = client.query_points(

@@ -1,12 +1,15 @@
 """Index recent Home Assistant history into Qdrant.
 
-Usage:
-    sops exec-env secrets.enc.env 'uv run ingest.py --days 3'
+Usage (two secret files: HA's own, and the shared Qdrant one — ADR-0005,
+ADR-0006):
+    sops exec-env ../../secrets.enc.env \\
+      'sops exec-env secrets.enc.env "uv run ingest.py --days 3"'
 """
 
 import argparse
 import datetime
 import hashlib
+import os
 
 import requests
 from qdrant_client import QdrantClient
@@ -16,9 +19,17 @@ import ha_client
 from textify import INTERESTING_DOMAINS, textify
 
 EMBED_URL = "http://localhost:8081/embedding"
-QDRANT_URL = "http://localhost:6333"
 COLLECTION = "ha_history"
 VECTOR_SIZE = 1024  # bge-m3, see ADR-0002
+
+
+def qdrant_client() -> QdrantClient:
+    """See ADR-0006: shared ha-addon-qdrant instance, not abox."""
+    url = os.environ.get("QDRANT_URL", "http://localhost:6333")
+    kwargs = {}
+    if api_key := os.environ.get("QDRANT_API_KEY"):
+        kwargs["api_key"] = api_key
+    return QdrantClient(url=url, **kwargs)
 
 
 def embed(text: str) -> list[float]:
@@ -54,7 +65,7 @@ def main() -> None:
     ]
     print(f"{len(entities)} entities in scope (of {len(states)} total)")
 
-    client = QdrantClient(url=QDRANT_URL)
+    client = qdrant_client()
     if not client.collection_exists(COLLECTION):
         client.create_collection(
             collection_name=COLLECTION,

@@ -1,6 +1,8 @@
 # ADR-0003: Qdrant as the vector store, one collection per source
 
-- **Status**: accepted
+- **Status**: accepted; connection target superseded by
+  [ADR-0006](0006-qdrant-off-abox-onto-ha-addon.md) — "one collection per
+  source" still stands, only *which* Qdrant instance changed
 - **Date**: 2026-09-18
 
 ## Context

@@ -1,10 +1,11 @@
 """Index Obsidian recipes into Qdrant using a local llama.cpp embedding server.
 
-Usage:
-    uv run index_recipes.py
+Usage (needs the shared Qdrant secret — ADR-0006):
+    sops exec-env ../../secrets.enc.env 'uv run index.py'
 """
 
 import hashlib
+import os
 import pathlib
 import sys
 
@@ -14,9 +15,22 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 
 RECIPES_DIR = pathlib.Path("/home/punka/obsidian/Домашнє/рецепти")
 EMBED_URL = "http://localhost:8081/embedding"
-QDRANT_URL = "http://localhost:6333"
 COLLECTION = "obsidian_recipes"
 VECTOR_SIZE = 1024  # bge-m3 output dimension
+
+
+def qdrant_client() -> QdrantClient:
+    """Connects to the shared ha-addon-qdrant instance — see ADR-0006.
+
+    Reads QDRANT_URL / QDRANT_API_KEY from the environment (populate via
+    `sops exec-env ../../secrets.enc.env '...'`). TLS is a real Let's
+    Encrypt cert (*.punka.space) — no custom CA needed.
+    """
+    url = os.environ.get("QDRANT_URL", "http://localhost:6333")
+    kwargs = {}
+    if api_key := os.environ.get("QDRANT_API_KEY"):
+        kwargs["api_key"] = api_key
+    return QdrantClient(url=url, **kwargs)
 
 
 def embed(text: str) -> list[float]:
@@ -37,7 +51,7 @@ def stable_id(path: pathlib.Path) -> str:
 
 
 def main() -> None:
-    client = QdrantClient(url=QDRANT_URL)
+    client = qdrant_client()
 
     if not client.collection_exists(COLLECTION):
         client.create_collection(

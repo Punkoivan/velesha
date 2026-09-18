@@ -1,17 +1,26 @@
 """Semantic search over indexed Obsidian recipes.
 
-Usage:
-    uv run search_recipes.py "щось із куркою на вечерю"
+Usage (needs the shared Qdrant secret — ADR-0006):
+    sops exec-env ../../secrets.enc.env 'uv run search.py "щось із куркою на вечерю"'
 """
 
+import os
 import sys
 
 import requests
 from qdrant_client import QdrantClient
 
 EMBED_URL = "http://localhost:8081/embedding"
-QDRANT_URL = "http://localhost:6333"
 COLLECTION = "obsidian_recipes"
+
+
+def qdrant_client() -> QdrantClient:
+    """See ADR-0006: shared ha-addon-qdrant instance, not abox."""
+    url = os.environ.get("QDRANT_URL", "http://localhost:6333")
+    kwargs = {}
+    if api_key := os.environ.get("QDRANT_API_KEY"):
+        kwargs["api_key"] = api_key
+    return QdrantClient(url=url, **kwargs)
 
 
 def embed(text: str) -> list[float]:
@@ -29,7 +38,7 @@ def main() -> None:
         sys.exit(1)
 
     query = " ".join(sys.argv[1:])
-    client = QdrantClient(url=QDRANT_URL)
+    client = qdrant_client()
     vector = embed(query)
 
     results = client.query_points(

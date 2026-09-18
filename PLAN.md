@@ -26,11 +26,13 @@ One search surface across all sources, not per-source scripts.
 - [ ] Voice input/output
 - [ ] Avatar
 
-### Phase 0 — Decouple from `abox` (housekeeping, not urgent)
-Velesha currently leans on the `abox` KinD cluster's Qdrant instance
-(port-forwarded). Fine for now; revisit once Phase 1 is solid — either its
-own lightweight Qdrant (docker-compose) or a decision to keep sharing
-`abox`.
+### Phase 0 — Decouple from `abox` (done)
+Was: Velesha leaned on the `abox` KinD cluster's Qdrant instance
+(port-forwarded). Forced the issue when `abox` got rebuilt from a
+different branch for a course exercise and took `obsidian_recipes` +
+`ha_history` down with it. Now on the persistent `ha-addon-qdrant`
+instance instead — see [ADR-0006](docs/adr/0006-qdrant-off-abox-onto-ha-addon.md).
+Both sources re-indexed and verified working there.
 
 ## Notes
 
