@@ -11,10 +11,13 @@ why things are built the way they are — start with
 
 ## Status
 
-Phase 1 (Memory): Obsidian recipes and Home Assistant history — indexed
-and searchable once re-indexed onto the new Qdrant (see below). See
-[`sources/obsidian/`](sources/obsidian/) and
-[`sources/home_assistant/`](sources/home_assistant/). Jellyfin next.
+Phase 1 (Memory): Obsidian recipes, Home Assistant history, and the
+Jellyfin library (movies + series watch stats) — indexed and searchable
+on the `ha-addon-qdrant` instance (see below). See
+[`sources/obsidian/`](sources/obsidian/),
+[`sources/home_assistant/`](sources/home_assistant/), and
+[`sources/jellyfin/`](sources/jellyfin/). Phase 1 complete; Phase 2
+(unified search) next — see [`PLAN.md`](PLAN.md).
 
 ## Stack
 

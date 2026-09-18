@@ -1,0 +1,13 @@
+[project]
+name = "jellyfin-source"
+version = "0.1.0"
+description = "Index Jellyfin library + watch stats into Qdrant"
+readme = "README.md"
+authors = [
+    { name = "Ivan Punko", email = "punkoivan@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "qdrant-client>=1.19.1",
+    "requests>=2.34.2",
+]

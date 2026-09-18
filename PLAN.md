@@ -12,7 +12,8 @@ Index life data sources into Qdrant, searchable semantically.
 - [x] Home Assistant history (`sources/home_assistant/`) — via HA REST API
       (`/api/history/period`), long-lived access token (ADR-0005 for how
       it's stored); textified events per ADR-0004
-- [ ] Jellyfin library + watch stats (`sources/jellyfin/`) — via Jellyfin API
+- [x] Jellyfin library + watch stats (`sources/jellyfin/`) — via Jellyfin
+      API, movie/series granularity per ADR-0007
 
 ### Phase 2 — Recall
 One search surface across all sources, not per-source scripts.
