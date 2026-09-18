@@ -1,11 +1,14 @@
 # Tandoor source
 
-Indexes recipes from [Tandoor Recipes](https://docs.tandoor.dev/) (the
-user's self-hosted instance, running as an add-on alongside Home
-Assistant) into Qdrant — title, description, and every step's
-instructions + ingredients, textified into one blob per recipe. See
-ADR-0014 for why this is a separate collection from
-`sources/obsidian/`'s recipes rather than merged into it.
+**Primary recipe source** (ADR-0015) — indexes recipes from [Tandoor
+Recipes](https://docs.tandoor.dev/) (the user's self-hosted instance,
+running as an add-on alongside Home Assistant) into Qdrant: title,
+description, keywords, and every step's instructions + ingredients,
+textified into one blob per recipe.
+
+All Obsidian recipe notes were migrated here via
+`migrate_from_obsidian.py` (one-time script, see ADR-0015) — new/updated
+recipes go through Tandoor's own UI or API now, not as Obsidian notes.
 
 ## Running it
 

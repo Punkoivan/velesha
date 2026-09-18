@@ -18,9 +18,10 @@ from qdrant_client import QdrantClient
 EMBED_URL = os.environ.get("EMBED_URL", "http://localhost:8083/embedding")
 
 # One entry per source collection — kept in sync by hand as sources are
-# added (sources/obsidian, sources/home_assistant, sources/jellyfin,
-# sources/tandoor).
-COLLECTIONS = ["obsidian_recipes", "ha_history", "jellyfin_library", "tandoor_recipes"]
+# added (sources/home_assistant, sources/jellyfin, sources/tandoor).
+# obsidian_recipes intentionally excluded: recipes migrated to Tandoor,
+# see ADR-0015 — the collection still exists in Qdrant but is stale.
+COLLECTIONS = ["ha_history", "jellyfin_library", "tandoor_recipes"]
 
 
 def qdrant_client() -> QdrantClient:

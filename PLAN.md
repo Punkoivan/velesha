@@ -8,15 +8,18 @@ voice + avatar later.
 ### Phase 1 — Memory (done)
 Index life data sources into Qdrant, searchable semantically.
 
-- [x] Obsidian recipes (`sources/obsidian/`) — see ADR-0002, ADR-0003
+- [x] Obsidian recipes (`sources/obsidian/`) — see ADR-0002, ADR-0003.
+      **Dormant since ADR-0015**: migrated to Tandoor, collection no
+      longer in the active search set.
 - [x] Home Assistant history (`sources/home_assistant/`) — via HA REST API
       (`/api/history/period`), long-lived access token (ADR-0005 for how
       it's stored); textified events per ADR-0004
 - [x] Jellyfin library + watch stats (`sources/jellyfin/`) — via Jellyfin
       API, movie/series granularity per ADR-0007
-- [x] Tandoor recipes (`sources/tandoor/`) — self-hosted alongside HA,
-      via its REST API, separate collection from Obsidian's recipes
-      per ADR-0014
+- [x] Tandoor recipes (`sources/tandoor/`) — self-hosted alongside HA, via
+      its REST API. Now the **primary recipe source**: all 34 Obsidian
+      recipe notes migrated in, `CLAUDE.md` updated to write new recipes
+      here instead of Obsidian — see ADR-0014, ADR-0015
 
 ### Phase 2 — Recall (done)
 One search surface across all sources, not per-source scripts.
@@ -65,6 +68,13 @@ Both sources re-indexed and verified working there.
 - **Arize Phoenix for profiling/tracing** — self-hosted, OpenTelemetry-
   based, would instrument `api/main.py`'s retrieval and generation calls
   as separate spans. Local-first, consistent with the rest of the stack.
+- **Exact equipment filtering, not just semantic** — Tandoor keywords
+  (ADR-0015) put equipment tags into the embedded text, so semantic
+  search leans toward them but doesn't guarantee an exact match (e.g.
+  "духовка" didn't reliably outrank unrelated recipes in one test). A
+  Qdrant payload filter on keyword, or a Tandoor API query by keyword,
+  would give exact "only recipes I can make with X" filtering if that's
+  ever needed instead of fuzzy relevance.
 
 ## Notes
 

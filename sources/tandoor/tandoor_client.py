@@ -26,6 +26,12 @@ _session = requests.Session()
 _session.headers.update({"Authorization": f"Bearer {TANDOOR_TOKEN}"})
 
 
+def create_recipe(payload: dict) -> dict:
+    r = _session.post(f"{TANDOOR_URL}/api/recipe/", json=payload, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
 def get_recipes() -> list[dict]:
     """Fetch every recipe's full detail (steps, ingredients), following pagination."""
     recipes = []

@@ -26,7 +26,9 @@ from qdrant_client import QdrantClient
 EMBED_URL = os.environ.get("EMBED_URL", "http://localhost:8083/embedding")
 CHAT_URL = os.environ.get("CHAT_URL", "http://localhost:8084/v1/chat/completions")
 
-COLLECTIONS = ["obsidian_recipes", "ha_history", "jellyfin_library", "tandoor_recipes"]
+# obsidian_recipes intentionally excluded: recipes migrated to Tandoor,
+# see ADR-0015 — the collection still exists in Qdrant but is stale.
+COLLECTIONS = ["ha_history", "jellyfin_library", "tandoor_recipes"]
 CHUNKS_PER_QUERY = 5
 MAX_CHUNK_CHARS = 600  # see ADR-0010 — keeps the chat model's context from overflowing
 

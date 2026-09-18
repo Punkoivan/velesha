@@ -25,6 +25,9 @@ def textify(recipe: dict) -> str:
     if description := recipe.get("description"):
         lines.append(description)
 
+    if keywords := [k["name"] for k in recipe.get("keywords", [])]:
+        lines.append("Теги: " + ", ".join(keywords))
+
     meta = []
     if servings := recipe.get("servings"):
         meta.append(f"Порцій: {servings}")

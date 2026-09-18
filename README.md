@@ -1,10 +1,9 @@
 # Velesha (Велеша)
 
 A personal assistant with real memory of home and life data — Home
-Assistant history, Jellyfin media library, Obsidian notes and recipes,
-Tandoor recipes, and whatever else earns a place. Named after Veles, the
-Slavic god of wisdom and knowledge. Search-based today, voice + avatar
-planned.
+Assistant history, Jellyfin media library, Obsidian notes, Tandoor
+recipes, and whatever else earns a place. Named after Veles, the Slavic
+god of wisdom and knowledge. Search-based today, voice + avatar planned.
 
 See [`PLAN.md`](PLAN.md) for the roadmap and [`docs/adr/`](docs/adr/) for
 why things are built the way they are — start with
@@ -12,14 +11,16 @@ why things are built the way they are — start with
 
 ## Status
 
-Phase 1 (Memory) and Phase 2 (Recall) done: Obsidian recipes, Home
-Assistant history, the Jellyfin library (movies + series watch stats),
-and Tandoor recipes are indexed and searchable on the `ha-addon-qdrant`
-instance, with a unified search CLI (`cli/search.py`) and RAG Q&A
-(`cli/ask.py`) across all four. See [`sources/obsidian/`](sources/obsidian/),
+Phase 1 (Memory) and Phase 2 (Recall) done: Home Assistant history, the
+Jellyfin library (movies + series watch stats), and Tandoor recipes
+(primary recipe source since ADR-0015 — Obsidian recipes migrated in)
+are indexed and searchable on the `ha-addon-qdrant` instance, with a
+unified search CLI (`cli/search.py`) and RAG Q&A (`cli/ask.py`) across
+all three active collections. See
 [`sources/home_assistant/`](sources/home_assistant/),
 [`sources/jellyfin/`](sources/jellyfin/),
-[`sources/tandoor/`](sources/tandoor/), and [`cli/`](cli/).
+[`sources/tandoor/`](sources/tandoor/),
+[`sources/obsidian/`](sources/obsidian/) (dormant), and [`cli/`](cli/).
 
 Phase 3 (interface): `api/` is wired into Home Assistant as
 `conversation.velesha` (via HA's built-in `llama_cpp` integration — see
@@ -60,9 +61,10 @@ LD_LIBRARY_PATH=./build/bin ./build/bin/llama-server \
 
 # 3. Index / search a source (each source's secrets.enc.env is chained
 #    after the shared one when the source also needs its own secret, e.g.
-#    Home Assistant's own API token)
-cd sources/obsidian
-sops exec-env ../../secrets.enc.env 'uv run index.py'
+#    Tandoor's own API token). Tandoor is the primary recipe source
+#    (ADR-0015) — sources/obsidian is dormant.
+cd sources/tandoor
+sops exec-env ../../secrets.enc.env 'sops --config /dev/null exec-env secrets.enc.env "uv run ingest.py"'
 sops exec-env ../../secrets.enc.env 'uv run search.py "щось із куркою на вечерю"'
 
 # 4. Or search everything at once (Phase 2, cli/search.py):
