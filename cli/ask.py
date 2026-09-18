@@ -58,7 +58,9 @@ def main() -> None:
         choices=COLLECTIONS,
         help="restrict retrieval to one collection instead of searching all of them",
     )
-    parser.add_argument("--chunks", type=int, default=5, help="chunks to retrieve as context")
+    parser.add_argument(
+        "--chunks", type=int, default=4, help="chunks to retrieve per collection (not a global cap)"
+    )
     args = parser.parse_args()
 
     question = " ".join(args.question)
@@ -66,7 +68,11 @@ def main() -> None:
 
     client = qdrant_client()
     vector = embed(question)
-    hits = search_all(client, vector, collections, per_collection=args.chunks)[: args.chunks]
+    # Per-collection limit, not a global top-N after merging — otherwise a
+    # broad recipe question loses recipe results to unrelated but
+    # higher-scoring hits from other collections (e.g. HA history events
+    # mentioning "духовка" outscoring actual baking recipes). See ADR-0016.
+    hits = search_all(client, vector, collections, per_collection=args.chunks)
 
     if not hits:
         print("Нічого релевантного не знайдено в жодній колекції.")

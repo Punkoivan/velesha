@@ -72,10 +72,11 @@ cd cli
 sops --config /dev/null exec-env ../secrets.enc.env 'uv run search.py "щось із куркою на вечерю"'
 
 # 5. Chat server, for Q&A (ADR-0010) — separate process/port, only
-#    needed for cli/ask.py, not for search:
+#    needed for cli/ask.py and api/, not for search. -c 8192, not 4096
+#    (ADR-0016 — per-collection retrieval needs the bigger context):
 cd tools/llama.cpp
 LD_LIBRARY_PATH=./build/bin ./build/bin/llama-server \
-  -m ../models/qwen2.5-3b-instruct-q4_k_m.gguf -c 4096 --jinja \
+  -m ../models/qwen2.5-3b-instruct-q4_k_m.gguf -c 8192 --jinja \
   --port 8084 --host 127.0.0.1
 
 cd cli

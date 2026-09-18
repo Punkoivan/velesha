@@ -29,7 +29,7 @@ CHAT_URL = os.environ.get("CHAT_URL", "http://localhost:8084/v1/chat/completions
 # obsidian_recipes intentionally excluded: recipes migrated to Tandoor,
 # see ADR-0015 — the collection still exists in Qdrant but is stale.
 COLLECTIONS = ["ha_history", "jellyfin_library", "tandoor_recipes"]
-CHUNKS_PER_QUERY = 5
+CHUNKS_PER_COLLECTION = 4  # see ADR-0016 — per collection, not a global cap
 MAX_CHUNK_CHARS = 600  # see ADR-0010 — keeps the chat model's context from overflowing
 
 SYSTEM_PROMPT = (
@@ -63,21 +63,20 @@ def retrieve_context(query: str) -> str:
     client = qdrant_client()
     vector = embed(query)
 
-    hits = []
+    # Per-collection limit, not a global top-N after merging — otherwise a
+    # broad recipe question loses recipe results to unrelated but
+    # higher-scoring hits from other collections (e.g. HA history events
+    # mentioning "духовка" outscoring actual baking recipes). See ADR-0016.
+    lines = []
     for collection in COLLECTIONS:
         if not client.collection_exists(collection):
             continue
         results = client.query_points(
-            collection_name=collection, query=vector, limit=CHUNKS_PER_QUERY, with_payload=True
+            collection_name=collection, query=vector, limit=CHUNKS_PER_COLLECTION, with_payload=True
         ).points
         for r in results:
-            hits.append({"collection": collection, "score": r.score, "payload": r.payload})
-    hits.sort(key=lambda h: h["score"], reverse=True)
-
-    lines = []
-    for h in hits[:CHUNKS_PER_QUERY]:
-        text = " ".join(h["payload"].get("text", "").split())[:MAX_CHUNK_CHARS]
-        lines.append(f"[{h['collection']}] {text}")
+            text = " ".join(r.payload.get("text", "").split())[:MAX_CHUNK_CHARS]
+            lines.append(f"[{collection}] {text}")
     return "\n".join(lines)
 
 
