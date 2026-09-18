@@ -18,7 +18,7 @@ Index life data sources into Qdrant, searchable semantically.
 ### Phase 2 — Recall
 One search surface across all sources, not per-source scripts.
 
-- [ ] Unified query CLI (`velesha search <query>`) across all collections
+- [x] Unified query CLI (`cli/search.py`) across all collections
 - [ ] Basic Q&A: retrieve relevant chunks, answer with an LLM (local via
       llama.cpp, chat model this time — see future ADR)
 
