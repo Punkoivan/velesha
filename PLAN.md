@@ -42,6 +42,22 @@ different branch for a course exercise and took `obsidian_recipes` +
 instance instead — see [ADR-0006](docs/adr/0006-qdrant-off-abox-onto-ha-addon.md).
 Both sources re-indexed and verified working there.
 
+### Future ideas (not scheduled)
+- **Swap chat provider to Claude API** — user has separate Anthropic API
+  credits (confirmed real, not claude.ai Pro/Max subscription usage,
+  which is a different pool and can't power a third-party app). Would
+  mean a `CHAT_PROVIDER=local|anthropic` switch in `api/` and
+  `cli/ask.py`, trading RAM/local-only for quality and cost-per-token.
+  Deliberately deferred — staying fully local for now.
+- **Agentic write-back** — e.g. "find a borscht recipe in my notes; if
+  it's not there, search the web, pick the best one, add it to the
+  vault." Needs two things Velesha doesn't have yet: a web search tool,
+  and incremental indexing (today's `index.py` always re-embeds
+  everything from scratch). Given the local chat model (Qwen2.5-3B on
+  CPU) is not a reliable open-ended tool-use planner, this would likely
+  be a fixed orchestration script (search → fallback → LLM picks/
+  formats → write) rather than a free tool-calling loop.
+
 ## Notes
 
 - Every non-obvious decision gets an ADR in `docs/adr/`, not just a mention
