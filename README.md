@@ -17,8 +17,13 @@ stats) are indexed and searchable on the `ha-addon-qdrant` instance, with
 a unified search CLI (`cli/search.py`) and RAG Q&A (`cli/ask.py`) across
 all three. See [`sources/obsidian/`](sources/obsidian/),
 [`sources/home_assistant/`](sources/home_assistant/),
-[`sources/jellyfin/`](sources/jellyfin/), and [`cli/`](cli/). Phase 3
-(interface) next — see [`PLAN.md`](PLAN.md).
+[`sources/jellyfin/`](sources/jellyfin/), and [`cli/`](cli/).
+
+Phase 3 (interface): `api/` is wired into Home Assistant as
+`conversation.velesha` (via HA's built-in `llama_cpp` integration — see
+[ADR-0013](docs/adr/0013-ha-llama-cpp-integration-streaming-required.md)),
+answering retrieval-grounded questions through HA's own conversation
+API. Voice/avatar not started — see [`PLAN.md`](PLAN.md).
 
 ## Stack
 
@@ -71,4 +76,11 @@ LD_LIBRARY_PATH=./build/bin ./build/bin/llama-server \
 
 cd cli
 sops --config /dev/null exec-env ../secrets.enc.env 'uv run ask.py "коли я востаннє дивився мумію?"'
+
+# 6. API server, for HA integration (ADR-0011, ADR-0013):
+cd api
+sops --config /dev/null exec-env ../secrets.enc.env \
+  'uv run uvicorn main:app --host 0.0.0.0 --port 8090'
+# Then in HA: add the "llama.cpp" integration, base_url
+# http://<this-host-LAN-IP>:8090/v1, no API key — see api/README.md.
 ```

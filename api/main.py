@@ -19,6 +19,7 @@ import uuid
 
 import requests
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from qdrant_client import QdrantClient
 
@@ -88,7 +89,15 @@ class ChatCompletionRequest(BaseModel):
     messages: list[ChatMessage]
     max_tokens: int = 400
     temperature: float = 0.2
-    stream: bool = False  # ignored — see ADR-0011, streaming isn't implemented yet
+    stream: bool = False
+
+
+def stream_upstream(payload: dict):
+    with requests.post(CHAT_URL, json=payload, timeout=120, stream=True) as resp:
+        resp.raise_for_status()
+        for chunk in resp.iter_content(chunk_size=1024):
+            if chunk:
+                yield chunk
 
 
 @app.get("/health")
@@ -112,15 +121,16 @@ def chat_completions(req: ChatCompletionRequest):
     upstream_messages = [{"role": "system", "content": augmented_system}]
     upstream_messages += [{"role": m.role, "content": m.content} for m in req.messages if m.role != "system"]
 
-    resp = requests.post(
-        CHAT_URL,
-        json={
-            "messages": upstream_messages,
-            "max_tokens": req.max_tokens,
-            "temperature": req.temperature,
-        },
-        timeout=120,
-    )
+    payload = {
+        "messages": upstream_messages,
+        "max_tokens": req.max_tokens,
+        "temperature": req.temperature,
+    }
+
+    if req.stream:
+        return StreamingResponse(stream_upstream({**payload, "stream": True}), media_type="text/event-stream")
+
+    resp = requests.post(CHAT_URL, json=payload, timeout=120)
     resp.raise_for_status()
     upstream = resp.json()
 

@@ -23,13 +23,15 @@ One search surface across all sources, not per-source scripts.
       Qwen2.5-3B-Instruct chat model (llama.cpp, port 8084) — see
       ADR-0010
 
-### Phase 3 — Interface
+### Phase 3 — Interface (integration done, rest not started)
 - [x] OpenAI-compatible API (`api/`) — retrieval-grounded
-      `/v1/chat/completions`, the integration point for HA's built-in
-      "OpenAI Conversation" integration — see ADR-0011
-- [ ] Wire it into Home Assistant (add the integration, point it at this
-      host; close the streaming/system-prompt gaps noted in
-      `api/README.md` if Assist needs them)
+      `/v1/chat/completions` — see ADR-0011
+- [x] Wired into Home Assistant as `conversation.velesha`, via HA's
+      built-in `llama_cpp` integration (not "OpenAI Conversation" — that
+      dropped custom-`base_url` support; see ADR-0013). Streaming
+      implemented (HA requires it). Verified end-to-end via
+      `/api/conversation/process` — Q&A works; device control/live state
+      does not (HA's Assist tool schema is received but not acted on).
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar
@@ -57,6 +59,9 @@ Both sources re-indexed and verified working there.
   CPU) is not a reliable open-ended tool-use planner, this would likely
   be a fixed orchestration script (search → fallback → LLM picks/
   formats → write) rather than a free tool-calling loop.
+- **Arize Phoenix for profiling/tracing** — self-hosted, OpenTelemetry-
+  based, would instrument `api/main.py`'s retrieval and generation calls
+  as separate spans. Local-first, consistent with the rest of the stack.
 
 ## Notes
 

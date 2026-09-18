@@ -2,9 +2,9 @@
 
 OpenAI-compatible `/v1/chat/completions` server over Velesha's RAG
 pipeline (retrieval across `cli/search.py`'s collections + generation via
-the local chat model) — the integration point for Home Assistant's
-built-in "OpenAI Conversation" integration, or anything else that speaks
-the OpenAI chat API. See ADR-0011.
+the local chat model) — wired into Home Assistant via HA's built-in
+`llama_cpp` integration (**not** "OpenAI Conversation" — see ADR-0013 for
+why). Works with any OpenAI-chat-API client, streaming or not.
 
 ## Running it
 
@@ -23,12 +23,22 @@ curl http://localhost:8090/v1/chat/completions -H 'Content-Type: application/jso
 }'
 ```
 
+## HA setup
+
+Add the **`llama_cpp`** integration (Settings → Devices & Services → Add
+Integration → "llama.cpp") — not "OpenAI Conversation", which dropped
+custom-`base_url` support entirely (ADR-0013). Point it at
+`http://<this-host-LAN-IP>:8090/v1`, leave the API key empty, pick the
+`velesha` model it discovers. Creates a `conversation.<name>` entity
+usable via `/api/conversation/process` or HA's Assist pipeline.
+
 ## Limitations
 
-- No streaming — `stream: true` in the request is accepted but ignored,
-  always returns a complete response. Fine for `curl`/scripted use; may
-  need addressing before real HA integration if HA's client requires SSE.
-- Retrieval always runs against the latest user message only, and any
-  system message the caller sends is replaced with Velesha's own
-  (retrieval-grounded) one — HA's own system prompt (entity states, etc.)
-  isn't merged in yet. Revisit when actually wiring up HA.
+- HA's Assist function-calling schema (`tools` in the request — device
+  control, live entity state) is received but dropped: `conversation.velesha`
+  answers retrieval-grounded questions, it does **not** control devices
+  or answer "what's the current state of X" questions. A real
+  device-control agent is future work.
+- Any system message the caller sends (e.g. HA's own house-description
+  prompt) is replaced with Velesha's own retrieval-augmented one, not
+  merged.

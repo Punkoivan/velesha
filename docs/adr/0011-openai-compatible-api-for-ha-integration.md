@@ -57,12 +57,11 @@ posture as the embedding/chat `llama-server`s themselves).
 - A third long-running process joins the embedding (8083) and chat
   (8084) `llama-server`s: the API server itself (8090, lightweight —
   FastAPI/Uvicorn, no model weights of its own).
-- Not yet wired into HA — this ADR covers building the integration
-  *point*, not the integration itself (adding the "OpenAI Conversation"
-  integration in HA's UI, pointed at `http://<this-host>:8090/v1`, is a
-  follow-up step once this box's own network reachability from HA is
-  confirmed).
-- No streaming support and no merging of a caller-supplied system prompt
-  with Velesha's own (see `api/README.md`) — both are real gaps to close
-  before HA's Assist pipeline can use this for anything beyond simple
-  one-shot Q&A; not blocking to stand the server up and test it directly.
+- Building this server (the general decision) held up; **which HA
+  integration actually points at it did not** — HA's built-in "OpenAI
+  Conversation" integration, as of HA 2026.9, dropped support for a
+  custom `base_url` entirely (official docs: "does not support
+  OpenAI-API-compatible third-party services, proxies, or alternative
+  backends"). The wiring actually used is HA's separate built-in
+  `llama_cpp` integration, and streaming turned out to be mandatory, not
+  optional — see ADR-0013 for both corrections and the verified setup.
