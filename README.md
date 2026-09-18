@@ -11,13 +11,14 @@ why things are built the way they are — start with
 
 ## Status
 
-Phase 1 (Memory): Obsidian recipes, Home Assistant history, and the
-Jellyfin library (movies + series watch stats) — indexed and searchable
-on the `ha-addon-qdrant` instance (see below). See
-[`sources/obsidian/`](sources/obsidian/),
-[`sources/home_assistant/`](sources/home_assistant/), and
-[`sources/jellyfin/`](sources/jellyfin/). Phase 1 complete; Phase 2
-(unified search) next — see [`PLAN.md`](PLAN.md).
+Phase 1 (Memory) and Phase 2 (Recall) done: Obsidian recipes, Home
+Assistant history, and the Jellyfin library (movies + series watch
+stats) are indexed and searchable on the `ha-addon-qdrant` instance, with
+a unified search CLI (`cli/search.py`) and RAG Q&A (`cli/ask.py`) across
+all three. See [`sources/obsidian/`](sources/obsidian/),
+[`sources/home_assistant/`](sources/home_assistant/),
+[`sources/jellyfin/`](sources/jellyfin/), and [`cli/`](cli/). Phase 3
+(interface) next — see [`PLAN.md`](PLAN.md).
 
 ## Stack
 
@@ -31,6 +32,8 @@ on the `ha-addon-qdrant` instance (see below). See
   [ADR-0006](docs/adr/0006-qdrant-off-abox-onto-ha-addon.md)
 - Secrets: SOPS + age, encrypted files committed, no plaintext `.env` —
   [ADR-0005](docs/adr/0005-secrets-via-sops-age.md)
+- Q&A: local `llama-server` + `Qwen2.5-3B-Instruct`, retrieval-grounded —
+  [ADR-0010](docs/adr/0010-qa-chat-model-qwen25-3b-truncated-context.md)
 
 ## Running it
 
@@ -58,4 +61,14 @@ sops exec-env ../../secrets.enc.env 'uv run search.py "щось із курко�
 # 4. Or search everything at once (Phase 2, cli/search.py):
 cd cli
 sops --config /dev/null exec-env ../secrets.enc.env 'uv run search.py "щось із куркою на вечерю"'
+
+# 5. Chat server, for Q&A (ADR-0010) — separate process/port, only
+#    needed for cli/ask.py, not for search:
+cd tools/llama.cpp
+LD_LIBRARY_PATH=./build/bin ./build/bin/llama-server \
+  -m ../models/qwen2.5-3b-instruct-q4_k_m.gguf -c 4096 --jinja \
+  --port 8084 --host 127.0.0.1
+
+cd cli
+sops --config /dev/null exec-env ../secrets.enc.env 'uv run ask.py "коли я востаннє дивився мумію?"'
 ```

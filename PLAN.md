@@ -5,7 +5,7 @@ voice + avatar later.
 
 ## Phases
 
-### Phase 1 — Memory (in progress)
+### Phase 1 — Memory (done)
 Index life data sources into Qdrant, searchable semantically.
 
 - [x] Obsidian recipes (`sources/obsidian/`) — see ADR-0002, ADR-0003
@@ -15,12 +15,13 @@ Index life data sources into Qdrant, searchable semantically.
 - [x] Jellyfin library + watch stats (`sources/jellyfin/`) — via Jellyfin
       API, movie/series granularity per ADR-0007
 
-### Phase 2 — Recall
+### Phase 2 — Recall (done)
 One search surface across all sources, not per-source scripts.
 
 - [x] Unified query CLI (`cli/search.py`) across all collections
-- [ ] Basic Q&A: retrieve relevant chunks, answer with an LLM (local via
-      llama.cpp, chat model this time — see future ADR)
+- [x] Basic Q&A (`cli/ask.py`): retrieves chunks, answers with a local
+      Qwen2.5-3B-Instruct chat model (llama.cpp, port 8084) — see
+      ADR-0010
 
 ### Phase 3 — Interface
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
