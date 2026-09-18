@@ -1,9 +1,10 @@
 # Velesha (Велеша)
 
 A personal assistant with real memory of home and life data — Home
-Assistant history, Jellyfin media library, Obsidian notes and recipes, and
-whatever else earns a place. Named after Veles, the Slavic god of wisdom
-and knowledge. Search-based today, voice + avatar planned.
+Assistant history, Jellyfin media library, Obsidian notes and recipes,
+Tandoor recipes, and whatever else earns a place. Named after Veles, the
+Slavic god of wisdom and knowledge. Search-based today, voice + avatar
+planned.
 
 See [`PLAN.md`](PLAN.md) for the roadmap and [`docs/adr/`](docs/adr/) for
 why things are built the way they are — start with
@@ -12,12 +13,13 @@ why things are built the way they are — start with
 ## Status
 
 Phase 1 (Memory) and Phase 2 (Recall) done: Obsidian recipes, Home
-Assistant history, and the Jellyfin library (movies + series watch
-stats) are indexed and searchable on the `ha-addon-qdrant` instance, with
-a unified search CLI (`cli/search.py`) and RAG Q&A (`cli/ask.py`) across
-all three. See [`sources/obsidian/`](sources/obsidian/),
+Assistant history, the Jellyfin library (movies + series watch stats),
+and Tandoor recipes are indexed and searchable on the `ha-addon-qdrant`
+instance, with a unified search CLI (`cli/search.py`) and RAG Q&A
+(`cli/ask.py`) across all four. See [`sources/obsidian/`](sources/obsidian/),
 [`sources/home_assistant/`](sources/home_assistant/),
-[`sources/jellyfin/`](sources/jellyfin/), and [`cli/`](cli/).
+[`sources/jellyfin/`](sources/jellyfin/),
+[`sources/tandoor/`](sources/tandoor/), and [`cli/`](cli/).
 
 Phase 3 (interface): `api/` is wired into Home Assistant as
 `conversation.velesha` (via HA's built-in `llama_cpp` integration — see

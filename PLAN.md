@@ -14,6 +14,9 @@ Index life data sources into Qdrant, searchable semantically.
       it's stored); textified events per ADR-0004
 - [x] Jellyfin library + watch stats (`sources/jellyfin/`) — via Jellyfin
       API, movie/series granularity per ADR-0007
+- [x] Tandoor recipes (`sources/tandoor/`) — self-hosted alongside HA,
+      via its REST API, separate collection from Obsidian's recipes
+      per ADR-0014
 
 ### Phase 2 — Recall (done)
 One search surface across all sources, not per-source scripts.
