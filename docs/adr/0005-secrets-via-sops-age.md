@@ -41,6 +41,27 @@ To edit secrets: `sops sources/home_assistant/secrets.enc.env` (opens
 decrypted in `$EDITOR`, re-encrypts on save — never touches disk
 unencrypted outside the editor's temp file, which SOPS shreds after).
 
+**Gotcha when creating a new `secrets.enc.env` from scratch** (as opposed
+to editing an existing one): rule matching in `.sops.yaml` is based on the
+*input* filename, so encrypting via `sops --encrypt <(...) > out.enc.env`
+fails with `error loading config: no matching creation rules found` — SOPS
+sees the process-substitution fd path, not `out.enc.env`, and (as of SOPS
+3.13.3) still enforces config-based matching even when `--age <key>` is
+passed explicitly, as long as a `.sops.yaml` exists in the cwd. Fix:
+pass `--config /dev/null` to skip config lookup for that one invocation —
+`--age` alone is then sufficient:
+
+```bash
+sops --config /dev/null --encrypt --age <public-key> \
+  --input-type dotenv --output-type dotenv \
+  <(grep -E '^(HA_URL|HA_TOKEN)=' /path/to/source/.env) \
+  > sources/home_assistant/secrets.enc.env
+```
+
+Once the file exists, plain `sops sources/home_assistant/secrets.enc.env`
+(no flags) matches `.sops.yaml` correctly, since then SOPS is reading the
+real filename.
+
 ## Alternatives considered
 
 - **Plaintext `.env` + gitignore** — simplest, but exactly the "which .env
