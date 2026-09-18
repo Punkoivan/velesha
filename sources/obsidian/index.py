@@ -14,7 +14,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
 RECIPES_DIR = pathlib.Path("/home/punka/obsidian/Домашнє/рецепти")
-EMBED_URL = "http://localhost:8081/embedding"
+EMBED_URL = os.environ.get("EMBED_URL", "http://localhost:8083/embedding")
 COLLECTION = "obsidian_recipes"
 VECTOR_SIZE = 1024  # bge-m3 output dimension
 

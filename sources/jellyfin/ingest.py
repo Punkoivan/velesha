@@ -16,7 +16,7 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 import jellyfin_client
 from textify import textify
 
-EMBED_URL = "http://localhost:8081/embedding"
+EMBED_URL = os.environ.get("EMBED_URL", "http://localhost:8083/embedding")
 COLLECTION = "jellyfin_library"
 VECTOR_SIZE = 1024  # bge-m3, see ADR-0002
 ITEM_TYPES = ["Movie", "Series"]  # see ADR-0007 for why not Episode

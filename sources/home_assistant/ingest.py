@@ -18,7 +18,7 @@ from qdrant_client.models import Distance, PointStruct, VectorParams
 import ha_client
 from textify import INTERESTING_DOMAINS, textify
 
-EMBED_URL = "http://localhost:8081/embedding"
+EMBED_URL = os.environ.get("EMBED_URL", "http://localhost:8083/embedding")
 COLLECTION = "ha_history"
 VECTOR_SIZE = 1024  # bge-m3, see ADR-0002
 

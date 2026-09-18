@@ -35,10 +35,13 @@ on the `ha-addon-qdrant` instance (see below). See
 ## Running it
 
 ```bash
-# 1. Embedding server
+# 1. Embedding server — must be this repo's own build (tools/llama.cpp),
+#    not one borrowed from another project (see ADR-0009). Default port
+#    is 8083, overridable via EMBED_URL in every script.
 cd tools/llama.cpp
-./build/bin/llama-server -m ../models/bge-m3-Q4_K_M.gguf --embedding --pooling cls \
-  -c 8192 -b 8192 -ub 8192 --port 8081 --host 127.0.0.1
+LD_LIBRARY_PATH=./build/bin ./build/bin/llama-server \
+  -m ../models/bge-m3-Q4_K_M.gguf --embedding --pooling cls \
+  -c 8192 -b 8192 -ub 8192 --port 8083 --host 127.0.0.1
 
 # 2. Qdrant: ha-addon-qdrant, reached over TLS (its cert is a real Let's
 #    Encrypt cert, no custom CA needed — see ADR-0006). Connection details
@@ -51,4 +54,8 @@ cd tools/llama.cpp
 cd sources/obsidian
 sops exec-env ../../secrets.enc.env 'uv run index.py'
 sops exec-env ../../secrets.enc.env 'uv run search.py "щось із куркою на вечерю"'
+
+# 4. Or search everything at once (Phase 2, cli/search.py):
+cd cli
+sops --config /dev/null exec-env ../secrets.enc.env 'uv run search.py "щось із куркою на вечерю"'
 ```

@@ -10,7 +10,7 @@ import sys
 import requests
 from qdrant_client import QdrantClient
 
-EMBED_URL = "http://localhost:8081/embedding"
+EMBED_URL = os.environ.get("EMBED_URL", "http://localhost:8083/embedding")
 COLLECTION = "obsidian_recipes"
 
 

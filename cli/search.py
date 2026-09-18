@@ -15,7 +15,7 @@ import os
 import requests
 from qdrant_client import QdrantClient
 
-EMBED_URL = "http://localhost:8081/embedding"
+EMBED_URL = os.environ.get("EMBED_URL", "http://localhost:8083/embedding")
 
 # One entry per source collection — kept in sync by hand as sources are
 # added (sources/obsidian, sources/home_assistant, sources/jellyfin).
