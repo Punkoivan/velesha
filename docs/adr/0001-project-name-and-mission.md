@@ -5,10 +5,9 @@
 
 ## Context
 
-This started as a small script to semantically search Obsidian recipes, then grew
-into a broader idea: a personal assistant that indexes data about your life
+This started as a small script to semantically search Obsidian recipes, then grew into a broader idea: a personal assistant that indexes data about your life
 (Home Assistant history, Jellyfin media library, Obsidian notes/recipes, more
-later) and can answer questions about it — eventually with a voice interface
+later) and can answer questions about it - eventually with a voice interface
 and an avatar.
 
 That scope is different enough from "a search script" that it deserves its
@@ -18,10 +17,7 @@ of living as a subfolder of the `harness-course` learning repo.
 ## Decision
 
 Name: **Velesha** (Велеша) — from Veles, the Slavic god of wisdom, magic, and
-knowledge, with a `-sha`/`-ша` diminutive suffix (same pattern as Sasha,
-Misha) to make it read as a character/companion name rather than a database
-or library. The "ha" also nods to Home Assistant, one of the first and
-primary data sources.
+knowledge, with a `-sha`/`-ша` diminutive suffix to make it read as a character/companion name rather than a database or library. The "ha" also nods to Home Assistant, one of the first and primary data sources, while SH in name is an Eastern egg for SHell users :)
 
 Checked before committing to it:
 - `veles` alone is taken on PyPI and npm, and collides conceptually with
