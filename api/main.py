@@ -28,7 +28,7 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from tools import call_tool, tools_for
+from tools import PASSTHROUGH_TOOLS, call_tool, tools_for
 
 CHAT_URL = os.environ.get("CHAT_URL", "http://localhost:8084/v1/chat/completions")
 # Optional hosted model (any OpenAI-compatible endpoint): set CHAT_API_KEY
@@ -46,6 +46,11 @@ _CONTROL_LINES = {
     "control_jellyfin_playback": (
         "- control_jellyfin_playback: керувати тим, що зараз грає на Kodi — пауза, продовжити, "
         "зупинити, наступна/попередня серія (НЕ передавай це як назву фільму)\n"
+    ),
+    "toloka_search": "- toloka_search: пошук роздач на Толоці за назвою (розмір, сідери)\n",
+    "toloka_add": (
+        "- toloka_add: додати варіант з останнього пошуку на Толоці за номером; категорію бери ЛИШЕ "
+        "зі слів користувача, інакше запитай яку\n"
     ),
     "qbittorrent_add": (
         "- qbittorrent_add: додати торрент за посиланням з повідомлення; категорію бери ЛИШЕ з "
@@ -144,11 +149,18 @@ def run_agent(messages: list[dict], tools: list[dict], user_text: str = "") -> s
             return message.get("content") or ""
 
         messages.append(message)
+        results = []
         for tc in tool_calls:
             fn = tc["function"]
             print(f"TOOL {fn['name']} {fn['arguments']}", flush=True)  # audit trail
             result = call_tool(fn["name"], fn["arguments"], user_text)
+            results.append(result)
             messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+        # A numbered list the user will refer back to must reach them
+        # exactly — the 3B model rewrites/drops lines and costs a whole
+        # extra call. Return such tool output verbatim (ADR-0024).
+        if all(tc["function"]["name"] in PASSTHROUGH_TOOLS for tc in tool_calls):
+            return "\n\n".join(results)
 
     return "Забагато кроків міркування — не вдалось отримати остаточну відповідь."
 

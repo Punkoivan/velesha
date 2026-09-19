@@ -19,6 +19,7 @@ import zoneinfo
 import ha_client
 import jellyfin_client
 import qbit_client
+import toloka_client
 from qdrant_client import QdrantClient
 from search_backend import COLLECTIONS, CANDIDATE_POOL, CHUNKS_PER_COLLECTION, MAX_CHUNK_CHARS, embed, qdrant_client
 
@@ -395,7 +396,10 @@ def tool_get_sensor_history(args: dict) -> str:
 # in testing: the 3B model called the play tool on "що є з Декстера?" and
 # "порадь серіал на вечір" (ADR-0021). Deliberately a code gate, not a
 # model decision.
-CONTROL_TOOLS = {"play_on_jellyfin_device", "control_jellyfin_playback", "qbittorrent_add"}
+CONTROL_TOOLS = {"play_on_jellyfin_device", "control_jellyfin_playback", "qbittorrent_add", "toloka_add"}
+
+# Answered verbatim, without a second model call (ADR-0024).
+PASSTHROUGH_TOOLS = {"toloka_search"}
 _COMMAND_RE = re.compile(
     r"(включ|увімкн|ввімкн|запуст|постав|відтвор|\bplay\b|пауз|продовж|зупин|стоп|наступн|попередн|далі|пропуст|\bnext\b|\bstop\b|\bpause\b)",
     re.IGNORECASE,
@@ -428,6 +432,54 @@ def _qbit_add_schema() -> dict:
     }
 
 
+# толока / толоку / на толоці / толозі — the stem alternates к/ц/з
+_TOLOKA_WORD_RE = re.compile(r"(толо[кцзч]|toloka|торент|торрент)", re.IGNORECASE)
+_ADD_VERB_RE = re.compile(r"(додай|додати|завантаж|скач|качай|постав)", re.IGNORECASE)
+_SEARCH_TTL = 30 * 60
+_last_search: dict = {"at": 0.0, "rows": []}
+
+
+def _fresh_search() -> bool:
+    return bool(_last_search["rows"]) and time.time() - _last_search["at"] < _SEARCH_TTL
+
+
+def _toloka_search_schema() -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": "toloka_search",
+            "description": "Пошук роздач на Толоці за назвою фільму чи серіалу: повертає варіанти з розміром і сідерами.",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "Назва фільму/серіалу, можна рік, напр. 'Декстер' чи 'Mandy 2018'"}},
+                "required": ["query"],
+            },
+        },
+    }
+
+
+def _toloka_add_schema() -> dict:
+    cats = [n for n, c in qbit_client.categories().items() if c.get("savePath")]
+    return {
+        "type": "function",
+        "function": {
+            "name": "toloka_add",
+            "description": (
+                "Додати в qBittorrent варіант з ОСТАННЬОГО пошуку на Толоці за його номером у списку. "
+                "Категорію (папку) обирай ЛИШЕ якщо користувач її назвав; інакше не викликай, а запитай."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "number": {"type": "integer", "description": "Номер варіанта зі списку пошуку"},
+                    "category": {"type": "string", "enum": cats, "description": "Категорія (папка збереження)"},
+                },
+                "required": ["number", "category"],
+            },
+        },
+    }
+
+
 def tools_for(user_text: str) -> list[dict]:
     text = user_text or ""
     tools = TOOLS if _COMMAND_RE.search(text) else [t for t in TOOLS if t["function"]["name"] not in CONTROL_TOOLS]
@@ -435,6 +487,11 @@ def tools_for(user_text: str) -> list[dict]:
     # a model can't be allowed to invent one (ADR-0023).
     if _TORRENT_LINK_RE.search(text):
         tools = tools + [_qbit_add_schema()]
+    if _TOLOKA_WORD_RE.search(text):
+        tools = tools + [_toloka_search_schema()]
+    # Adding from Toloka works only on a variant the user was just shown.
+    if _fresh_search() and _ADD_VERB_RE.search(text):
+        tools = tools + [_toloka_add_schema()]
     return tools
 
 
@@ -604,6 +661,67 @@ def tool_qbittorrent_add(args: dict, user_text: str) -> str:
     return "qBittorrent відхилив торрент (можливо, уже додано або посилання некоректне)."
 
 
+_UNIT = {"KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
+_DISK_MARGIN = 5 * 1024**3  # leave headroom, don't fill the disk to the last byte
+
+
+def _size_bytes(text: str) -> float | None:
+    m = re.match(r"\s*([\d.,]+)\s*([KMGT]B)", text, re.IGNORECASE)
+    if not m:
+        return None
+    return float(m.group(1).replace(",", ".")) * _UNIT[m.group(2).upper()]
+
+
+def _fits(size_text: str, free: float) -> bool:
+    size = _size_bytes(size_text)
+    return size is None or size + _DISK_MARGIN <= free
+
+
+def tool_toloka_search(args: dict) -> str:
+    query = args.get("query", "").strip()
+    if not query:
+        return "Не вказано, що шукати."
+    rows = sorted(toloka_client.search(query), key=lambda r: -r["seeders"])[:8]
+    if not rows:
+        return f"На Толоці нічого не знайдено за «{query}»."
+    _last_search.update(at=time.time(), rows=rows)
+    free = qbit_client.server_state()["free_space_on_disk"]
+    lines = [
+        f"{i}. {r['title'][:95]} — {r['size']}, сідерів: {r['seeders']} ({r['forum']})"
+        + ("" if _fits(r["size"], free) else " — НЕ ВЛІЗЕ на диск")
+        for i, r in enumerate(rows, 1)
+    ]
+    cats = [n for n, c in qbit_client.categories().items() if c.get("savePath")]
+    return (
+        f"Знайдено на Толоці за «{query}» (за кількістю сідерів):\n" + "\n".join(lines)
+        + f"\n\nВільно на диску: {_gib(free)}. Щоб додати — скажи номер і розділ ({', '.join(cats)}), напр.: «додай 2 в {cats[0] if cats else 'фільми'}»."
+    )
+
+
+def tool_toloka_add(args: dict, user_text: str) -> str:
+    if not _fresh_search():
+        return "НЕ ДОДАНО. Немає свіжого пошуку — спершу знайди роздачу на Толоці."
+    rows = _last_search["rows"]
+    number, category = args.get("number"), args.get("category", "")
+    if not isinstance(number, int) or not 1 <= number <= len(rows):
+        return f"НЕ ДОДАНО. Номер має бути від 1 до {len(rows)}."
+    cats = {n: c for n, c in qbit_client.categories().items() if c.get("savePath")}
+    if category not in cats:
+        return f"НЕ ДОДАНО. Невідома категорія '{category}'. Доступні: {', '.join(cats)}."
+    # The category must come from the user, not from the model's guess: a
+    # wrong one puts files in the wrong folder (ADR-0023/0024).
+    if category.lower()[:5] not in user_text.lower():
+        return f"НЕ ДОДАНО. Користувач не назвав розділ. Запитай його: в яку категорію додати ({', '.join(cats)})?"
+    row = rows[number - 1]
+    free = qbit_client.server_state()["free_space_on_disk"]
+    if not _fits(row["size"], free):
+        return f"НЕ ДОДАНО. Не вистачає місця: роздача {row['size']}, вільно {_gib(free)} (потрібен запас {_gib(_DISK_MARGIN)})."
+    data = toloka_client.download_torrent(row["download_id"])
+    if qbit_client.add_file(data, category):
+        return f"Додано в qBittorrent: «{row['title'][:80]}» ({row['size']}), категорія «{category}» (папка {cats[category]['savePath']})."
+    return "qBittorrent відхилив торрент (можливо, уже додано)."
+
+
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
@@ -613,6 +731,8 @@ DISPATCH = {
     "qbittorrent_status": tool_qbittorrent_status,
     "qbittorrent_list": tool_qbittorrent_list,
     "qbittorrent_add": tool_qbittorrent_add,
+    "toloka_search": tool_toloka_search,
+    "toloka_add": tool_toloka_add,
 }
 
 
@@ -625,7 +745,7 @@ def call_tool(name: str, arguments_json: str, user_text: str = "") -> str:
     if not handler:
         return f"Невідомий інструмент: {name}"
     try:
-        if name == "qbittorrent_add":
+        if name in ("qbittorrent_add", "toloka_add"):
             return handler(args, user_text)
         return handler(args)
     except Exception as e:

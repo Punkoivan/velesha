@@ -53,6 +53,9 @@ One search surface across all sources, not per-source scripts.
 - [x] **qBittorrent** (ADR-0023): status (session vs all-time upload, ratio-0
       counts), filtered lists, add-with-category (code-gated; category must
       come from the user's words and have a save path).
+- [x] **Toloka.to search + add** (ADR-0024): search by title with the user's
+      login (title/size/seeders), pick by number and name the section,
+      `.torrent` uploaded to qBittorrent; disk-space guard.
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar

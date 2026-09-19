@@ -55,3 +55,14 @@ def add(url: str, category: str) -> bool:
     """autoTMM=true so the file lands in the category's own save path."""
     r = _request("POST", "/torrents/add", data={"urls": url, "category": category, "autoTMM": "true"})
     return r.text.strip() != "Fails."
+
+
+def add_file(torrent: bytes, category: str, start: bool = True) -> bool:
+    """Upload a .torrent; autoTMM=true so it lands in the category's folder."""
+    r = _request(
+        "POST",
+        "/torrents/add",
+        data={"category": category, "autoTMM": "true", "stopped": "false" if start else "true"},
+        files={"torrents": ("upload.torrent", torrent, "application/x-bittorrent")},
+    )
+    return r.text.strip() != "Fails."
