@@ -28,16 +28,19 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+import guardrails
 from tools import PASSTHROUGH_TOOLS, call_tool, tools_for
 
-CHAT_URL = os.environ.get("CHAT_URL", "http://localhost:8084/v1/chat/completions")
+# Local llama-server (always available as the private/fallback lane).
 # Optional hosted model (any OpenAI-compatible endpoint): set CHAT_API_KEY
 # (and CHAT_MODEL, and CHAT_URL if not OpenAI) in api/secrets.enc.env.
-# Unset = the local llama-server, exactly as before. See ADR-0022.
+# Unset = local only, exactly as before. See ADR-0022, guardrails: ADR-0025.
 CHAT_API_KEY = os.environ.get("CHAT_API_KEY")
 CHAT_MODEL = os.environ.get("CHAT_MODEL", "gpt-4o-mini")
-if CHAT_API_KEY and "CHAT_URL" not in os.environ:
-    CHAT_URL = "https://api.openai.com/v1/chat/completions"
+LOCAL_URL = os.environ.get("LOCAL_CHAT_URL") or (
+    None if CHAT_API_KEY else os.environ.get("CHAT_URL")
+) or "http://localhost:8084/v1/chat/completions"
+HOSTED_URL = (os.environ.get("CHAT_URL") or "https://api.openai.com/v1/chat/completions") if CHAT_API_KEY else None
 MAX_TOOL_ITERATIONS = 4
 
 
@@ -114,35 +117,70 @@ def list_models():
     return {"object": "list", "data": [{"id": "velesha", "object": "model", "owned_by": "velesha"}]}
 
 
+def _complete_local(messages: list[dict], tools: list[dict]) -> dict:
+    payload = {
+        "messages": messages, "tools": tools, "tool_choice": "auto",
+        "max_tokens": 400, "temperature": 0.2,
+        "repeat_penalty": 1.15,  # Qwen2.5-3B loops on longer answers otherwise (ADR-0018)
+    }
+    # llama-server answers 500 when the model emits output its tool-call
+    # parser rejects (occasional garbled tokens from the quantized 3B
+    # model) — one retry usually succeeds; never surface a 500.
+    try:
+        for _ in range(2):
+            resp = requests.post(LOCAL_URL, json=payload, timeout=180)
+            if resp.status_code != 500:
+                break
+    except requests.exceptions.RequestException:
+        # slow CPU model + long tool schemas can exceed the timeout;
+        # HA should get an answer, not a 500 (ADR-0023)
+        return {"content": "Модель не встигла відповісти — спробуй ще раз."}
+    if resp.status_code == 500:
+        return {"content": "Не вдалося сформувати відповідь — спробуй перефразувати питання."}
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]
+
+
+def _complete_hosted(messages: list[dict], tools: list[dict]) -> dict | None:
+    """One hosted-model step, or None to make the caller fall back to local.
+
+    Everything that leaves the machine is redacted first (ADR-0025) and the
+    token usage is recorded against the daily budget."""
+    payload = {
+        "model": CHAT_MODEL, "messages": guardrails.redact_messages(messages),
+        "tools": tools, "tool_choice": "auto", "max_completion_tokens": 600,
+    }
+    try:
+        resp = requests.post(
+            HOSTED_URL, json=payload, headers={"Authorization": f"Bearer {CHAT_API_KEY}"}, timeout=120
+        )
+    except requests.exceptions.RequestException as e:
+        print(f"HOSTED error {type(e).__name__} -> local", flush=True)
+        return None
+    if resp.status_code >= 400:
+        print(f"HOSTED http {resp.status_code} -> local", flush=True)
+        return None
+    data = resp.json()
+    guardrails.record_usage(data.get("usage", {}).get("total_tokens", 0))
+    return data["choices"][0]["message"]
+
+
 def run_agent(messages: list[dict], tools: list[dict], user_text: str = "") -> str:
+    tool_names: dict[str, str] = {}  # tool_call_id -> tool name, for data-class routing
+    seen_calls: set[tuple[str, str]] = set()
     for _ in range(MAX_TOOL_ITERATIONS):
-        payload = {"messages": messages, "tools": tools, "tool_choice": "auto"}
-        headers = {}
-        if CHAT_API_KEY:
-            headers["Authorization"] = f"Bearer {CHAT_API_KEY}"
-            payload["model"] = CHAT_MODEL
-            payload["max_completion_tokens"] = 600
-        else:
-            payload["max_tokens"] = 400
-            payload["temperature"] = 0.2
-            payload["repeat_penalty"] = 1.15  # Qwen2.5-3B loops on longer answers otherwise (ADR-0018)
-        # llama-server answers 500 when the model emits output its
-        # tool-call parser rejects (occasional garbled tokens from the
-        # quantized 3B model, seen in testing) — one retry usually
-        # succeeds since sampling isn't deterministic; never surface a 500.
-        try:
-            for attempt in range(2):
-                resp = requests.post(CHAT_URL, json=payload, headers=headers, timeout=180)
-                if resp.status_code != 500:
-                    break
-        except requests.exceptions.RequestException:
-            # slow CPU model + long tool schemas can exceed the timeout;
-            # HA should get an answer, not a 500 (ADR-0023)
-            return "Модель не встигла відповісти — спробуй ще раз."
-        if resp.status_code == 500:
-            return "Не вдалося сформувати відповідь — спробуй перефразувати питання."
-        resp.raise_for_status()
-        message = resp.json()["choices"][0]["message"]
+        # Hosted only while there is budget AND no result of a blocked
+        # (sensitive) tool is in the conversation — those stay local.
+        hosted = (
+            HOSTED_URL is not None
+            and guardrails.budget_left() > 0
+            and not guardrails.has_blocked_result(messages, tool_names)
+        )
+        message = _complete_hosted(messages, tools) if hosted else None
+        backend = "hosted" if message is not None else "local"
+        if message is None:
+            message = _complete_local(messages, tools)
+        print(f"LLM {backend}", flush=True)  # audit trail
 
         tool_calls = message.get("tool_calls")
         if not tool_calls:
@@ -152,6 +190,11 @@ def run_agent(messages: list[dict], tools: list[dict], user_text: str = "") -> s
         results = []
         for tc in tool_calls:
             fn = tc["function"]
+            key = (fn["name"], fn["arguments"])
+            if key in seen_calls:  # same call twice = a loop; stop spending
+                return "Агент зациклився на повторному виклику — зупинено."
+            seen_calls.add(key)
+            tool_names[tc["id"]] = fn["name"]
             print(f"TOOL {fn['name']} {fn['arguments']}", flush=True)  # audit trail
             result = call_tool(fn["name"], fn["arguments"], user_text)
             results.append(result)
