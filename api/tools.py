@@ -152,7 +152,7 @@ TOOLS = [
         "function": {
             "name": "qbittorrent_status",
             "description": (
-                "Загальний стан qBittorrent: скільки віддано і завантажено за сесію та "
+                "Загальний стан qBittorrent користувача (вже доданих торрентів): скільки віддано і завантажено за сесію та "
                 "за весь час, ratio, швидкості, вільне місце, скільки торрентів "
                 "роздається/качається/на паузі, скільки з нульовою віддачею."
             ),
@@ -163,7 +163,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "qbittorrent_list",
-            "description": "Список торрентів qBittorrent за фільтром (назва, ratio, віддано за сесію, категорія).",
+            "description": "Список торрентів, які ВЖЕ додані в qBittorrent користувача, за фільтром (назва, ratio, віддано за сесію, категорія). НЕ для пошуку нового фільму.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -178,6 +178,22 @@ TOOLS = [
                     },
                 },
                 "required": ["filter"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "jellyfin_find",
+            "description": (
+                "ТОЧНИЙ пошук за назвою в бібліотеці Jellyfin користувача: чи є там цей фільм/серіал. "
+                "Повертає лише справжні збіги назви (не схожі фільми). Викликай першим, коли користувач "
+                "просить знайти фільм/серіал або питає, чи він є."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"title": {"type": "string", "description": "Назва фільму чи серіалу"}},
+                "required": ["title"],
             },
         },
     },
@@ -480,8 +496,6 @@ def _qbit_add_schema() -> dict:
     }
 
 
-# толока / толоку / на толоці / толозі — the stem alternates к/ц/з
-_TOLOKA_WORD_RE = re.compile(r"(толо[кцзч]|toloka|торент|торрент)", re.IGNORECASE)
 _ADD_VERB_RE = re.compile(r"(додай|додати|завантаж|скач|качай|постав)", re.IGNORECASE)
 _SEARCH_TTL = 30 * 60
 _last_search: dict = {"at": 0.0, "rows": []}
@@ -496,7 +510,8 @@ def _toloka_search_schema() -> dict:
         "type": "function",
         "function": {
             "name": "toloka_search",
-            "description": "Пошук роздач на Толоці за назвою фільму чи серіалу: повертає варіанти з розміром і сідерами.",
+            "description": ("Пошук НОВОЇ роздачі на Толоці за назвою фільму чи серіалу, щоб його завантажити: повертає варіанти з розміром і сідерами. "
+                            "Викликай, коли користувач хоче знайти/скачати/подивитись фільм чи серіал, якого немає в його бібліотеці."),
             "parameters": {
                 "type": "object",
                 "properties": {"query": {"type": "string", "description": "Назва фільму/серіалу, можна рік, напр. 'Декстер' чи 'Mandy 2018'"}},
@@ -535,8 +550,9 @@ def tools_for(user_text: str) -> list[dict]:
     # a model can't be allowed to invent one (ADR-0023).
     if _TORRENT_LINK_RE.search(text):
         tools = tools + [_qbit_add_schema()]
-    if _TOLOKA_WORD_RE.search(text):
-        tools = tools + [_toloka_search_schema()]
+    # Read-only and cheap, so always offered: a word gate looked only at the
+    # latest message and lost the request in multi-turn talk (ADR-0029).
+    tools = tools + [_toloka_search_schema()]
     if _WEB_RE.search(text) and web_search_available():
         tools = tools + [_web_search_schema()]
     # Adding from Toloka works only on a variant the user was just shown.
@@ -860,6 +876,21 @@ def tool_web_search(args: dict) -> str:
     return "\n".join(texts) + ("\n\nДжерела: " + ", ".join(sources[:3]) if sources else "")
 
 
+def tool_jellyfin_find(args: dict) -> str:
+    # Semantic search returns the nearest film, never "nothing" — it offered
+    # "Ураган (1999)" for "Ідеальний шторм" and the model called it the same
+    # film. Jellyfin's own name search only returns real name matches (ADR-0029).
+    title = args.get("title", "").strip()
+    if not title:
+        return "Не вказано назву."
+    items = jellyfin_client.search(title)
+    if not items:
+        return (f"У бібліотеці Jellyfin немає «{title}» (збігів за назвою нема; схожі за змістом фільми "
+                "не вважаються збігом).")
+    lines = [f"«{i['Name']}» ({i.get('ProductionYear', '?')}, {'серіал' if i['Type'] == 'Series' else 'фільм'})" for i in items[:5]]
+    return "У бібліотеці Jellyfin є: " + "; ".join(lines) + "."
+
+
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
@@ -870,6 +901,7 @@ DISPATCH = {
     "qbittorrent_list": tool_qbittorrent_list,
     "qbittorrent_add": tool_qbittorrent_add,
     "toloka_search": tool_toloka_search,
+    "jellyfin_find": tool_jellyfin_find,
     "toloka_add": tool_toloka_add,
     "web_search": tool_web_search,
 }

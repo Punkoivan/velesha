@@ -73,9 +73,14 @@ def system_prompt(offered: set[str]) -> str:
     today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=3))).strftime("%Y-%m-%d")
     return (
         f"Ти — Велеша, персональний асистент. Сьогодні {today}. "
-        "Відповідай українською, коротко і по суті.\n\n"
+        "Відповідай українською, коротко і по суті, простим текстом без markdown (без зірочок, "
+        "заголовків, таблиць і посилань) — відповідь можуть озвучувати.\n"
+        "Запит може надходити ГОЛОСОМ: тоді це розпізнана мова з можливими помилками (схожі слова, "
+        "зіпсовані назви, немає розділових знаків). Тлумач його за змістом і за назвами пристроїв, "
+        "фільмів тощо; не кажи, що користувач «ввів» чи «написав» запит.\n\n"
         "У тебе є інструменти:\n"
-        "- search_knowledge: рецепти (Tandoor) і Jellyfin; знімок історії HA може бути застарілим\n"
+        "- search_knowledge: рецепти (Tandoor) і Jellyfin (що дивився, поради); знімок історії HA може бути застарілим\n"
+        "- jellyfin_find: чи Є фільм/серіал у бібліотеці Jellyfin за назвою (точний пошук)\n"
         "- get_live_state: ПОТОЧНЕ значення будь-якого пристрою, сенсора чи лічильника "
         "(відчинені двері, температура, скільки запитів заблокував AdGuard зараз) — "
         "не для минулих подій 'коли востаннє' і не для підрахунку за конкретну дату\n"
@@ -88,6 +93,10 @@ def system_prompt(offered: set[str]) -> str:
         "а нуль за сесію лише коли прямо питають про сесію\n"
         + "".join(line for name, line in _CONTROL_LINES.items() if name in offered)
         + "\n"
+        "Знайти фільм/серіал (\"знайди X\", \"є X?\", \"хочу подивитись X\"): спершу перевір бібліотеку Jellyfin "
+        "інструментом jellyfin_find; якщо його відповідь «немає» — шукай на Толоці (toloka_search). Схожий фільм "
+        "НІКОЛИ не видавай за шуканий. Питання про вже додані торренти (ratio, віддача, що качається) — qbittorrent_*, "
+        "а не пошук нового.\n"
         "Інструменти — для даних користувача (дім, файли, торренти, рецепти). На загальні питання "
         "(знання про фільми, людей, речі; порада, що подивитись) відповідай самостійно, без інструментів. "
         "Не вигадуй дані користувача: якщо інструмент не знайшов відповіді, так і скажи."
@@ -237,6 +246,14 @@ def sse_chunk(content: str) -> bytes:
 
 @app.post("/v1/chat/completions")
 def chat_completions(req: ChatCompletionRequest):
+    if os.environ.get("LOG_CALLER_PROMPT"):  # diagnostic: does HA mark voice vs typed input?
+        with open("/tmp/velesha-caller.log", "a") as f:
+            f.write(json.dumps({
+                "t": time.strftime("%H:%M:%S"),
+                "system": [m.content for m in req.messages if m.role == "system"],
+                "last_user": next((m.content for m in reversed(req.messages) if m.role == "user"), None),
+                "n_messages": len(req.messages),
+            }, ensure_ascii=False) + "\n")
     messages = [{"role": "system", "content": ""}]
     messages += [{"role": m.role, "content": m.content or ""} for m in req.messages if m.role != "system"]
 
@@ -244,6 +261,10 @@ def chat_completions(req: ChatCompletionRequest):
     offered = tools_for(last_user)
     messages[0]["content"] = system_prompt({t["function"]["name"] for t in offered})
     answer = run_agent(messages, offered, last_user)
+    # A silent drop to the weak local model looked like the assistant getting
+    # stupid (the user's torrent-search confusion, ADR-0029) — say so.
+    if HOSTED_URL and guardrails.budget_left() <= 0:
+        answer = "(Денний ліміт токенів вичерпано — відповідає слабша локальна модель.) " + answer
 
     if req.stream:
         return StreamingResponse(iter([sse_chunk(answer)]), media_type="text/event-stream")

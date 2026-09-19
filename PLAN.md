@@ -66,6 +66,8 @@ One search surface across all sources, not per-source scripts.
 - [x] **Web search** (ADR-0028): OpenAI Responses `web_search`, gated by
       internet/freshness cues, 15/day cap, masked query. Gemini's Google
       Search grounding tested: no free-tier quota (429).
+- [x] **Torrent search routing fixed** (ADR-0029): Toloka search always
+      offered, exact `jellyfin_find`, budget fallback announced.
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar
