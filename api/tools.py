@@ -506,6 +506,20 @@ _ADD_VERB_RE = re.compile(
     r"перш|друг|трет|четвер|п'ят)", re.IGNORECASE)
 _SEARCH_TTL = 30 * 60
 _last_search: dict = {"at": 0.0, "rows": []}
+# A variant the user already picked whose category is still missing. The agent
+# asks "в яку категорію?" and the reply is a bare "фільми" — a message with no
+# verb, number or list word, which the per-message gate used to drop (ADR-0031).
+_PENDING_TTL = 10 * 60
+_pending_add: dict = {"number": None, "at": 0.0}
+
+
+def _fresh_pending() -> bool:
+    return _pending_add["number"] is not None and time.time() - _pending_add["at"] < _PENDING_TTL
+
+
+def _names_a_category(text: str) -> bool:
+    low = text.lower()
+    return any(name.lower()[:5] in low for name, c in qbit_client.categories().items() if c.get("savePath"))
 
 
 def _fresh_search() -> bool:
@@ -541,10 +555,10 @@ def _toloka_add_schema() -> dict:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "number": {"type": "integer", "description": "Номер варіанта зі списку пошуку"},
+                    "number": {"type": "integer", "description": "Номер варіанта зі списку пошуку. Не вказуй, якщо користувач обрав його раніше, а зараз лише назвав категорію"},
                     "category": {"type": "string", "enum": cats, "description": "Категорія (папка збереження)"},
                 },
-                "required": ["number", "category"],
+                "required": ["category"],
             },
         },
     }
@@ -563,7 +577,7 @@ def tools_for(user_text: str) -> list[dict]:
     if _WEB_RE.search(text) and web_search_available():
         tools = tools + [_web_search_schema()]
     # Adding from Toloka works only on a variant the user was just shown.
-    if _fresh_search() and _ADD_VERB_RE.search(text):
+    if _fresh_search() and (_ADD_VERB_RE.search(text) or _fresh_pending() or _names_a_category(text)):
         tools = tools + [_toloka_add_schema()]
     return tools
 
@@ -788,14 +802,18 @@ def tool_toloka_add(args: dict, user_text: str) -> str:
         return "НЕ ДОДАНО. Немає свіжого пошуку — спершу знайди роздачу на Толоці."
     rows = _last_search["rows"]
     number, category = args.get("number"), args.get("category", "")
+    if not isinstance(number, int) and _fresh_pending():
+        number = _pending_add["number"]  # user picked earlier, only the category was missing
     if not isinstance(number, int) or not 1 <= number <= len(rows):
         return f"НЕ ДОДАНО. Номер має бути від 1 до {len(rows)}."
     cats = {n: c for n, c in qbit_client.categories().items() if c.get("savePath")}
     if category not in cats:
+        _pending_add.update(number=number, at=time.time())
         return f"НЕ ДОДАНО. Невідома категорія '{category}'. Доступні: {', '.join(cats)}."
     # The category must come from the user, not from the model's guess: a
     # wrong one puts files in the wrong folder (ADR-0023/0024).
     if category.lower()[:5] not in user_text.lower():
+        _pending_add.update(number=number, at=time.time())
         return f"НЕ ДОДАНО. Користувач не назвав розділ. Запитай його: в яку категорію додати ({', '.join(cats)})?"
     row = rows[number - 1]
     free, available = _available_space()
@@ -808,6 +826,7 @@ def tool_toloka_add(args: dict, user_text: str) -> str:
         )
     data = toloka_client.download_torrent(row["download_id"])
     if qbit_client.add_file(data, category):
+        _pending_add.update(number=None)
         return f"Додано в qBittorrent: «{row['title'][:80]}» ({row['size']}), категорія «{category}» (папка {cats[category]['savePath']})."
     return "qBittorrent відхилив торрент (можливо, уже додано)."
 

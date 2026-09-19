@@ -70,6 +70,8 @@ One search surface across all sources, not per-source scripts.
       offered, exact `jellyfin_find`, budget fallback announced.
 - [x] **Add-from-Toloka fixed** (ADR-0030): wider intent gate, guard that
       flags 'added' claims when no action tool succeeded.
+- [x] **Toloka add across turns** (ADR-0031): a picked variant is remembered
+      while only the category is missing; bare category replies work.
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar
