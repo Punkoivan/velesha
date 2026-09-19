@@ -20,6 +20,7 @@ Usage:
 import datetime
 import json
 import os
+import re
 import time
 import uuid
 
@@ -29,7 +30,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 import guardrails
-from tools import PASSTHROUGH_TOOLS, call_tool, tools_for
+from tools import CONTROL_TOOLS, PASSTHROUGH_TOOLS, call_tool, tools_for
 
 # Local llama-server (always available as the private/fallback lane).
 # Optional hosted model (any OpenAI-compatible endpoint): set CHAT_API_KEY
@@ -178,7 +179,25 @@ def _complete_hosted(messages: list[dict], tools: list[dict]) -> dict | None:
     return data["choices"][0]["message"]
 
 
-def run_agent(messages: list[dict], tools: list[dict], user_text: str = "") -> str:
+# Every action tool starts its success message with one of these; anything else
+# ("НЕ ДОДАНО …", "Не …", errors) means nothing was changed.
+_ACTION_OK = ("Запущено", "Додано", "Поставлено на паузу", "Продовжено", "Зупинено")
+_CLAIM_RE = re.compile(
+    r"\b(додав|додала|додано|запустив|запустила|запущено|поставив на паузу|поставлено на паузу|"
+    r"продовжив|продовжено|зупинив|зупинено)\b", re.IGNORECASE)
+
+
+def unfounded_claim(answer: str, acted: bool) -> str:
+    """The model said it did something but no action tool succeeded — say so.
+
+    Found in real use: the add-torrent tool was not offered for "давай перший
+    варіант", and the model answered "додано" having called nothing (ADR-0030)."""
+    if acted or not _CLAIM_RE.search(answer):
+        return answer
+    return answer + "\n\n⚠ Насправді нічого не змінено: жодну дію не виконано. Скажи ще раз, що саме зробити."
+
+
+def run_agent(messages: list[dict], tools: list[dict], user_text: str = "", state: dict | None = None) -> str:
     tool_names: dict[str, str] = {}  # tool_call_id -> tool name, for data-class routing
     seen_calls: set[tuple[str, str]] = set()
     for _ in range(MAX_TOOL_ITERATIONS):
@@ -210,6 +229,8 @@ def run_agent(messages: list[dict], tools: list[dict], user_text: str = "") -> s
             tool_names[tc["id"]] = fn["name"]
             print(f"TOOL {fn['name']} {fn['arguments']}", flush=True)  # audit trail
             result = call_tool(fn["name"], fn["arguments"], user_text)
+            if state is not None and fn["name"] in CONTROL_TOOLS and result.startswith(_ACTION_OK):
+                state["acted"] = True
             results.append(result)
             messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
         # A numbered list the user will refer back to must reach them
@@ -260,7 +281,8 @@ def chat_completions(req: ChatCompletionRequest):
     last_user = next((m.content or "" for m in reversed(req.messages) if m.role == "user"), "")
     offered = tools_for(last_user)
     messages[0]["content"] = system_prompt({t["function"]["name"] for t in offered})
-    answer = run_agent(messages, offered, last_user)
+    state = {"acted": False}
+    answer = unfounded_claim(run_agent(messages, offered, last_user, state), state["acted"])
     # A silent drop to the weak local model looked like the assistant getting
     # stupid (the user's torrent-search confusion, ADR-0029) — say so.
     if HOSTED_URL and guardrails.budget_left() <= 0:

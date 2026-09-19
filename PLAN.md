@@ -68,6 +68,8 @@ One search surface across all sources, not per-source scripts.
       Search grounding tested: no free-tier quota (429).
 - [x] **Torrent search routing fixed** (ADR-0029): Toloka search always
       offered, exact `jellyfin_find`, budget fallback announced.
+- [x] **Add-from-Toloka fixed** (ADR-0030): wider intent gate, guard that
+      flags 'added' claims when no action tool succeeded.
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar

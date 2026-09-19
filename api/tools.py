@@ -496,7 +496,14 @@ def _qbit_add_schema() -> dict:
     }
 
 
-_ADD_VERB_RE = re.compile(r"(додай|додати|завантаж|скач|качай|постав)", re.IGNORECASE)
+# Picking from the list the user was just shown is an add request even without
+# the word "додай" ("давай перший варіант", "бери 2") — the first version only
+# matched add verbs and the tool silently wasn't offered (ADR-0030). Safe to be
+# broad: it also needs a fresh search, a category in the user's own words and
+# room on the disk.
+_ADD_VERB_RE = re.compile(
+    r"(додай|додати|завантаж|скач|качай|постав|давай|бери|візьми|обер|вибер|варіант|номер|№|\b[1-8]\b|"
+    r"перш|друг|трет|четвер|п'ят)", re.IGNORECASE)
 _SEARCH_TTL = 30 * 60
 _last_search: dict = {"at": 0.0, "rows": []}
 
