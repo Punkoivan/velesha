@@ -3,8 +3,8 @@
 OpenAI-compatible `/v1/chat/completions` server — Velesha as a
 tool-calling agent (ADR-0018), not blind RAG. The model decides when to
 call `search_knowledge` (recipes/Jellyfin/HA history), `get_live_state`
-(current device/sensor state), or `get_energy_usage` (kWh delta for a
-date) — instead of every question getting the same fixed context
+(current device/sensor state), or `get_sensor_history` (period summary: kWh, counter change, on/off
+counts) — instead of every question getting the same fixed context
 regardless of whether it's even answerable that way. Wired into Home
 Assistant via HA's built-in `llama_cpp` integration (**not** "OpenAI
 Conversation" — see ADR-0013 for why).
@@ -39,7 +39,7 @@ usable via `/api/conversation/process` or HA's Assist pipeline.
 ## Limitations
 
 - Read-only tools only — `search_knowledge`/`get_live_state`/
-  `get_energy_usage` never change anything. HA's Assist function-calling
+  `get_sensor_history` never change anything. HA's Assist function-calling
   schema (device control, `intent__HassTurnOn` etc.) is still received
   but dropped: `conversation.velesha` can't turn things on/off. A
   device-control agent is future work.

@@ -39,8 +39,8 @@ One search surface across all sources, not per-source scripts.
       the model three read-only tools — `search_knowledge` (the old
       always-on retrieval, now on-demand), `get_live_state` (live HA
       device/sensor state — the door-sensor "RAG only sees a snapshot"
-      gap), `get_energy_usage` (computed kWh delta — not a retrievable
-      fact at all). Verified end-to-end through HA on three real bugs
+      gap), `get_sensor_history` (period summaries computed in code — kWh used,
+      counter change, on/off counts; ADR-0020, not a retrievable fact at all). Verified end-to-end through HA on three real bugs
       this fixed. Device control still out of scope (HA's Assist tool
       schema received, not acted on).
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
@@ -81,10 +81,6 @@ Both sources re-indexed and verified working there.
   Qdrant payload filter on keyword, or a Tandoor API query by keyword,
   would give exact "only recipes I can make with X" filtering if that's
   ever needed instead of fuzzy relevance.
-- **Generic sensor history / delta tool** — `get_energy_usage` only handles
-  kWh counters; AdGuard-style counters (queries, blocked) work for *live*
-  values but "what happened yesterday" needs a general history tool over any
-  `sensor.*` (ADR-0019).
 - **Cross-conversation memory for `conversation.velesha`** — right now
   `api/` is stateless per request; within one HA conversation turn HA
   resends the full transcript so the model has short-term memory and can

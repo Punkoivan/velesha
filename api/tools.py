@@ -5,14 +5,15 @@ Three tools, chosen to close the exact gaps found in testing:
   the model now decides when and what to search for.
 - get_live_state: live HA state (the door-sensor bug — RAG only ever
   sees an indexed snapshot, never "right now").
-- get_energy_usage: a kWh delta over a date range — not a fact that can
-  be pre-textified, has to be computed at query time.
+- get_sensor_history: period summaries (kWh used, counter change, on/off
+  counts and durations) — computed at query time, ADR-0020.
 """
 
 import datetime
 import difflib
 import json
 import re
+import zoneinfo
 
 import ha_client
 from qdrant_client import QdrantClient
@@ -64,7 +65,7 @@ TOOLS = [
                 "properties": {
                     "entity_name": {
                         "type": "string",
-                        "description": "Конкретна назва пристрою/сенсора, напр. 'вхідні двері', 'температура спальня', 'AdGuard Захист' (не лише 'AdGuard')",
+                        "description": "Конкретна назва пристрою/сенсора, напр. 'вхідні двері', 'температура спальня' (конкретно, не лише назва пристрою)",
                     }
                 },
                 "required": ["entity_name"],
@@ -74,15 +75,22 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "get_energy_usage",
-            "description": "Скільки електроенергії (кВт·год) використав пристрій за вказану дату.",
+            "name": "get_sensor_history",
+            "description": (
+                "Підсумок за ПЕРІОД для пристрою чи сенсора Home Assistant: скільки "
+                "електроенергії використано (кВт·год), як змінився лічильник (запити "
+                "AdGuard), мін/макс/середнє температури, скільки разів і як довго "
+                "пристрій був увімкнений. Для питань 'скільки за день', 'що було вчора', "
+                "'за тиждень'. Історія в HA зберігається лише ~10 днів."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "entity_name": {"type": "string", "description": "Назва пристрою, напр. 'пралка', 'духовка'"},
-                    "date": {"type": "string", "description": "Дата у форматі YYYY-MM-DD"},
+                    "entity_name": {"type": "string", "description": "Конкретна назва пристрою/сенсора, напр. 'пралка', 'пралка електроенергія' (для кВт·год), 'DNS запити' (скільки запитів ВСЬОГО пройшло) або 'заблоковані DNS запити' (скільки з них заблоковано) — різні лічильники, 'телевізор'"},
+                    "start_date": {"type": "string", "description": "YYYY-MM-DD, або 'сьогодні' чи 'вчора'"},
+                    "end_date": {"type": "string", "description": "Необов'язково, включно, той самий формат. Без нього — лише start_date"},
                 },
-                "required": ["entity_name", "date"],
+                "required": ["entity_name", "start_date"],
             },
         },
     },
@@ -198,34 +206,117 @@ def tool_get_live_state(args: dict) -> str:
     return "\n".join(lines)
 
 
-def tool_get_energy_usage(args: dict) -> str:
-    entity = resolve_entity(args.get("entity_name", ""), unit="kWh")
-    if not entity:
-        return f"Не знайдено лічильник енергії для '{args.get('entity_name')}'."
+try:
+    _TZ = zoneinfo.ZoneInfo("Europe/Kyiv")
+except Exception:  # tzdata missing — fixed EEST offset, wrong only outside summer time
+    _TZ = datetime.timezone(datetime.timedelta(hours=3))
 
-    date_str = args.get("date", "")
+
+def _parse_day(text: str) -> datetime.date | None:
+    text = (text or "").strip().lower()
+    today = datetime.datetime.now(_TZ).date()
+    if text in ("сьогодні", "today"):
+        return today
+    if text in ("вчора", "yesterday"):
+        return today - datetime.timedelta(days=1)
     try:
-        day = datetime.date.fromisoformat(date_str)
+        return datetime.date.fromisoformat(text)
     except ValueError:
-        return f"Не вдалось розпізнати дату '{date_str}', очікую формат YYYY-MM-DD."
+        return None
 
-    tz = datetime.timezone(datetime.timedelta(hours=3))  # Europe/Kyiv, no DST handling
-    start = datetime.datetime.combine(day, datetime.time.min, tzinfo=tz)
-    end = start + datetime.timedelta(days=1)
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fmt(x: float) -> str:
+    return f"{x:.2f}".rstrip("0").rstrip(".")
+
+
+def tool_get_sensor_history(args: dict) -> str:
+    # Arithmetic is done here, not by the model: a 3B model can't reliably
+    # subtract or compare timestamps (see ADR-0017/0018). See ADR-0020.
+    hint = args.get("entity_name", "")
+    # A bare device name ("пралка") resolves to its on/off switch by design
+    # (domain priority); words about electricity mean its kWh counter.
+    wants_energy = any(w in hint.lower() for w in ("квт", "kwh", "енерг", "спожив", "електр"))
+    entity = resolve_entity(hint, unit="kWh") if wants_energy else None
+    entity = entity or resolve_entity(hint)
+    if not entity:
+        return f"Не знайдено пристрій '{hint}'."
+    name = entity["attributes"].get("friendly_name")
+
+    first_day = _parse_day(args.get("start_date", ""))
+    if not first_day:
+        return f"Не вдалось розпізнати дату '{args.get('start_date')}' — очікую YYYY-MM-DD, 'сьогодні' або 'вчора'."
+    last_day = _parse_day(args["end_date"]) if args.get("end_date") else first_day
+    if not last_day or last_day < first_day:
+        return f"Некоректний кінець періоду '{args.get('end_date')}'."
+
+    start = datetime.datetime.combine(first_day, datetime.time.min, tzinfo=_TZ)
+    end = min(datetime.datetime.combine(last_day, datetime.time.min, tzinfo=_TZ) + datetime.timedelta(days=1),
+              datetime.datetime.now(_TZ))
+    period = first_day.isoformat() if first_day == last_day else f"{first_day} — {last_day}"
 
     history = ha_client.get_history(entity["entity_id"], start.isoformat(), end.isoformat())
-    values = [float(h["state"]) for h in history if h.get("state") not in (None, "unknown", "unavailable")]
-    if not values:
-        return f"Немає даних по '{entity['attributes'].get('friendly_name')}' за {date_str}."
+    points = []
+    for h in history:
+        ts = datetime.datetime.fromisoformat(h["last_changed"]).astimezone(_TZ)
+        points.append((max(ts, start), h.get("state")))
+    points = [(t, v) for t, v in points if v not in (None, "unknown", "unavailable")]
+    if not points:
+        return f"Немає даних по '{name}' за {period} (HA зберігає історію ~10 днів)."
 
-    delta = max(values) - min(values)
-    return f"{entity['attributes'].get('friendly_name')} використав(ла) {delta:.2f} кВт·год за {date_str}."
+    attrs = entity["attributes"]
+    unit = attrs.get("unit_of_measurement", "")
+    nums = [(t, _num(v)) for t, v in points]
+
+    # on/off devices: count activations and total time on
+    if all(v is None for _, v in nums):
+        on_count, on_time, last_on = 0, datetime.timedelta(), None
+        for i, (t, v) in enumerate(points):
+            nxt = points[i + 1][0] if i + 1 < len(points) else end
+            if v == "on":
+                on_time += nxt - t
+                if i == 0 or points[i - 1][1] != "on":
+                    on_count += 1
+                last_on = t
+        hours, rem = divmod(int(on_time.total_seconds()), 3600)
+        text = f"{name} за {period}: вмикався {on_count} раз(ів), сумарно увімкнений {hours} год {rem // 60} хв"
+        if last_on:
+            text += f", останній раз увімкнений {last_on.strftime('%d.%m %H:%M')}"
+        return text + "."
+
+    values = [v for _, v in nums if v is not None]
+    first, last = values[0], values[-1]
+    counter = attrs.get("state_class") == "total_increasing" or unit in ("kWh", "Wh")
+    if counter:
+        used, prev = 0.0, None
+        for v in values:
+            if prev is not None:
+                used += v - prev if v >= prev else v  # drop below prev = counter reset
+            prev = v
+        return f"{name} за {period}: приріст лічильника {_fmt(used)} {unit}."
+
+    change = last - first
+    if unit in ("queries", "requests"):
+        # one plain sentence — with min/max/mean the 3B model read the start
+        # value as the answer to "how many" (ADR-0020)
+        return f"{name} за {period}: додалось {_fmt(change)} {unit}."
+    return (
+        f"{name} за {period}: зміна за період {'+' if change >= 0 else ''}{_fmt(change)} {unit} "
+        f"(з {_fmt(first)} до {_fmt(last)}); мін {_fmt(min(values))}, макс {_fmt(max(values))}, "
+        f"середнє {_fmt(sum(values) / len(values))}."
+    )
 
 
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
-    "get_energy_usage": tool_get_energy_usage,
+    "get_sensor_history": tool_get_sensor_history,
 }
 
 
