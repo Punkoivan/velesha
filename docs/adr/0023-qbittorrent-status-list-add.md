@@ -46,6 +46,15 @@ is off — so a category only routes files if the add call passes
   Adds with `autoTMM=true` so the file goes to the category's directory.
   No delete tool, no pause/resume (not asked for).
 
+**User's priority (asked after the first version):** both notions are
+wanted, but "рейтинг 0" without qualification means the all-time ratio.
+So the status leads with "роздач з рейтингом 0 (за весь час): N" and
+lists the session-only zero count as an addition; `qbittorrent_list`'s
+`zero_ratio` is documented as the default and `zero_session` as
+"only if the user asks about this session". Verified: "скільки роздач з
+рейтингом 0?" → `zero_ratio` (5), "скільки торрентів не віддавали за цю
+сесію?" → `zero_session` (28).
+
 ## Verification
 
 Read tools on real data (5 zero-ratio, 28 zero-session, 330.8 GB / 5.24

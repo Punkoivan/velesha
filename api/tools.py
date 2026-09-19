@@ -161,8 +161,8 @@ TOOLS = [
                         "type": "string",
                         "enum": ["zero_ratio", "zero_session", "downloading", "problems"],
                         "description": (
-                            "zero_ratio — готові торренти, які за весь час ще нікому не віддавали (ratio 0); "
-                            "zero_session — готові, що не віддавали за цю сесію; "
+                            "zero_ratio — «роздачі з рейтингом 0»: готові торренти, які за весь час нікому не віддавали (ratio 0) — обирай це за замовчуванням; "
+                            "zero_session — ЛИШЕ якщо користувач прямо питає про цю сесію: готові, що не віддавали за сесію; "
                             "downloading — що зараз качається; problems — помилки/пауза"
                         ),
                     },
@@ -558,8 +558,8 @@ def tool_qbittorrent_status(args: dict) -> str:
         f"Торрентів {len(ts)}: качається {sum(1 for t in ts if t['state'] in _DOWNLOADING)}, "
         f"на паузі {sum(1 for t in ts if t['state'] in _PAUSED)}, "
         f"з помилкою {sum(1 for t in ts if t['state'] in ('error', 'missingFiles'))}. "
-        f"Готових без жодної віддачі за весь час (ratio 0): {zero_ratio}; "
-        f"готових без віддачі за цю сесію: {zero_session}."
+        f"Роздач з рейтингом 0 (ratio 0, за весь час нікому не віддавали): {zero_ratio}. "
+        f"Додатково, без віддачі саме за цю сесію: {zero_session}."
     )
 
 
