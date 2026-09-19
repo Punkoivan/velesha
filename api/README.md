@@ -38,11 +38,12 @@ usable via `/api/conversation/process` or HA's Assist pipeline.
 
 ## Limitations
 
-- Read-only tools only — `search_knowledge`/`get_live_state`/
-  `get_sensor_history` never change anything. HA's Assist function-calling
-  schema (device control, `intent__HassTurnOn` etc.) is still received
-  but dropped: `conversation.velesha` can't turn things on/off. A
-  device-control agent is future work.
+- Read tools (`search_knowledge`/`get_live_state`/`get_sensor_history`)
+  never change anything. One action tool: `play_on_jellyfin_device`
+  (Kodi only, ADR-0021), offered to the model only when the user message
+  has a command verb. HA's Assist device-control schema
+  (`intent__HassTurnOn` etc.) is still received but dropped — device
+  power stays with HA's own intents.
 - Any system message the caller sends (e.g. HA's own house-description
   prompt) is replaced with Velesha's own tool-aware one, not merged.
 - Small-model residual: even with correct, correctly-sorted tool

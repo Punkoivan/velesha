@@ -28,13 +28,13 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from tools import TOOLS, call_tool
+from tools import call_tool, tools_for
 
 CHAT_URL = os.environ.get("CHAT_URL", "http://localhost:8084/v1/chat/completions")
 MAX_TOOL_ITERATIONS = 4
 
 
-def system_prompt() -> str:
+def system_prompt(control: bool) -> str:
     # The model has no notion of "today" on its own — without this it
     # guesses a training-era year (observed: "18.09" -> "2022-09-18")
     # when calling get_energy_usage with a dateless user phrase. See
@@ -51,7 +51,9 @@ def system_prompt() -> str:
         "не для минулих подій 'коли востаннє' і не для підрахунку за конкретну дату\n"
         "- get_sensor_history: підсумок за ПЕРІОД (скільки кВт·год, як змінився лічильник, "
         "скільки разів і як довго було увімкнено, мін/макс температури) за дату, 'вчора', 'сьогодні' "
-        "(якщо рік не вказано — бери поточний)\n\n"
+        "(якщо рік не вказано — бери поточний)\n"
+        + ("- play_on_jellyfin_device: запустити фільм/серіал з Jellyfin на Kodi\n" if control else "")
+        + "\n"
         "Використовуй інструмент, коли для відповіді потрібні конкретні дані — "
         "не вигадуй факти. Якщо інструмент не знайшов відповіді, так і скажи."
     )
@@ -84,11 +86,11 @@ def list_models():
     return {"object": "list", "data": [{"id": "velesha", "object": "model", "owned_by": "velesha"}]}
 
 
-def run_agent(messages: list[dict]) -> str:
+def run_agent(messages: list[dict], tools: list[dict]) -> str:
     for _ in range(MAX_TOOL_ITERATIONS):
         payload = {
             "messages": messages,
-            "tools": TOOLS,
+            "tools": tools,
             "tool_choice": "auto",
             "max_tokens": 400,
             "temperature": 0.2,
@@ -114,6 +116,7 @@ def run_agent(messages: list[dict]) -> str:
         messages.append(message)
         for tc in tool_calls:
             fn = tc["function"]
+            print(f"TOOL {fn['name']} {fn['arguments']}", flush=True)  # audit trail
             result = call_tool(fn["name"], fn["arguments"])
             messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
 
@@ -145,10 +148,13 @@ def sse_chunk(content: str) -> bytes:
 
 @app.post("/v1/chat/completions")
 def chat_completions(req: ChatCompletionRequest):
-    messages = [{"role": "system", "content": system_prompt()}]
+    messages = [{"role": "system", "content": ""}]
     messages += [{"role": m.role, "content": m.content or ""} for m in req.messages if m.role != "system"]
 
-    answer = run_agent(messages)
+    last_user = next((m.content or "" for m in reversed(req.messages) if m.role == "user"), "")
+    offered = tools_for(last_user)
+    messages[0]["content"] = system_prompt(control=len(offered) > len(tools_for("")))
+    answer = run_agent(messages, offered)
 
     if req.stream:
         return StreamingResponse(iter([sse_chunk(answer)]), media_type="text/event-stream")

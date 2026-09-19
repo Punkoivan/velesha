@@ -43,6 +43,10 @@ One search surface across all sources, not per-source scripts.
       counter change, on/off counts; ADR-0020, not a retrievable fact at all). Verified end-to-end through HA on three real bugs
       this fixed. Device control still out of scope (HA's Assist tool
       schema received, not acted on).
+- [x] **First state-changing tool** (ADR-0021): `play_on_jellyfin_device`
+      starts a movie/series (next unwatched episode) on Kodi via Jellyfin's
+      session API, waits for Kodi to boot, Kodi-only allowlist, offered to
+      the model only when the user's message has an explicit command verb.
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar

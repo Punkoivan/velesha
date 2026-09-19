@@ -13,9 +13,11 @@ import datetime
 import difflib
 import json
 import re
+import time
 import zoneinfo
 
 import ha_client
+import jellyfin_client
 from qdrant_client import QdrantClient
 from search_backend import COLLECTIONS, CANDIDATE_POOL, CHUNKS_PER_COLLECTION, MAX_CHUNK_CHARS, embed, qdrant_client
 
@@ -91,6 +93,24 @@ TOOLS = [
                     "end_date": {"type": "string", "description": "Необов'язково, включно, той самий формат. Без нього — лише start_date"},
                 },
                 "required": ["entity_name", "start_date"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "play_on_jellyfin_device",
+            "description": (
+                "ЗАПУСТИТИ відтворення фільму чи серіалу з Jellyfin на пристрої Kodi. "
+                "Для серіалу запускає наступний непереглянутий епізод. Викликай ЛИШЕ "
+                "коли користувач явно просить увімкнути/запустити/включити фільм чи серіал."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Назва фільму чи серіалу, напр. 'Декстер'"},
+                },
+                "required": ["title"],
             },
         },
     },
@@ -313,10 +333,85 @@ def tool_get_sensor_history(args: dict) -> str:
     )
 
 
+# State-changing tools are only *offered* to the model when the user's
+# message contains an explicit command verb. Prompt wording alone failed
+# in testing: the 3B model called the play tool on "що є з Декстера?" and
+# "порадь серіал на вечір" (ADR-0021). Deliberately a code gate, not a
+# model decision.
+CONTROL_TOOLS = {"play_on_jellyfin_device"}
+_COMMAND_RE = re.compile(r"(включ|увімкн|ввімкн|запуст|постав|відтвор|\bplay\b)", re.IGNORECASE)
+
+
+def tools_for(user_text: str) -> list[dict]:
+    if _COMMAND_RE.search(user_text or ""):
+        return TOOLS
+    return [t for t in TOOLS if t["function"]["name"] not in CONTROL_TOOLS]
+
+
+# The only device this tool may ever start playback on — a state-changing
+# tool gets an allowlist, not "any session" (ADR-0021).
+_PLAY_DEVICE_MARKER = "kodi"
+_SESSION_WAIT_SECONDS = 60
+
+
+def _find_play_session() -> dict | None:
+    for sess in jellyfin_client.sessions():
+        label = f"{sess.get('DeviceName', '')} {sess.get('Client', '')}".lower()
+        if _PLAY_DEVICE_MARKER in label and sess.get("SupportsRemoteControl"):
+            return sess
+    return None
+
+
+def _pick_title(term: str) -> dict | None:
+    items = jellyfin_client.search(term)
+    if not items:
+        return None
+    term_l = term.lower()
+    for item in items:  # prefer a name that starts with the search term
+        if item["Name"].lower().startswith(term_l):
+            return item
+    return items[0]
+
+
+def tool_play_on_jellyfin_device(args: dict, dry_run: bool = False) -> str:
+    title = args.get("title", "").strip()
+    if not title:
+        return "Не вказано, що запускати."
+    item = _pick_title(title)
+    if not item:
+        return f"У Jellyfin не знайдено '{title}'."
+
+    if item["Type"] == "Series":
+        episode = jellyfin_client.next_episode(item["Id"])
+        if not episode:
+            return f"У серіалі '{item['Name']}' немає епізодів."
+        play_id = episode["Id"]
+        what = f"{item['Name']}: сезон {episode.get('ParentIndexNumber', '?')} серія {episode.get('IndexNumber', '?')}"
+    else:
+        play_id, what = item["Id"], item["Name"]
+
+    # Kodi may still be booting after its power outlet was switched on:
+    # wait for its Jellyfin session instead of failing at once.
+    deadline = time.monotonic() + (0 if dry_run else _SESSION_WAIT_SECONDS)
+    while True:
+        sess = _find_play_session()
+        if sess or time.monotonic() >= deadline:
+            break
+        time.sleep(3)
+    if not sess:
+        return "Kodi зараз не в мережі (сесії Jellyfin немає) — спершу увімкни телевізор."
+
+    if dry_run:
+        return f"[dry-run] запустив би '{what}' на {sess['DeviceName']}."
+    jellyfin_client.play(sess["Id"], play_id)
+    return f"Запущено '{what}' на {sess['DeviceName']}."
+
+
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
     "get_sensor_history": tool_get_sensor_history,
+    "play_on_jellyfin_device": tool_play_on_jellyfin_device,
 }
 
 
