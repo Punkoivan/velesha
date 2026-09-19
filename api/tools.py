@@ -37,7 +37,7 @@ TOOLS = [
             "name": "search_knowledge",
             "description": (
                 "Семантичний пошук у базі знань Velesha: рецепти (Tandoor), "
-                "історія Home Assistant (проіндексовані події), Jellyfin "
+                "знімок історії Home Assistant (може бути застарілим — для 'коли востаннє' краще get_sensor_history), Jellyfin "
                 "(перегляди фільмів/серіалів). НЕ дає живий поточний стан "
                 "пристроїв і не рахує суми/дельти — для цього є інші інструменти."
             ),
@@ -85,13 +85,13 @@ TOOLS = [
                 "електроенергії використано (кВт·год), як змінився лічильник (запити "
                 "AdGuard), мін/макс/середнє температури, скільки разів і як довго "
                 "пристрій був увімкнений. Для питань 'скільки за день', 'що було вчора', "
-                "'за тиждень'. Історія в HA зберігається лише ~10 днів."
+                "'за тиждень'. Це ЖИВА історія — для 'коли востаннє вмикали/відчиняли X' бери її з start_date='тиждень'. Історія в HA зберігається лише ~10 днів."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "entity_name": {"type": "string", "description": "Конкретна назва пристрою/сенсора, напр. 'пралка', 'пралка електроенергія' (для кВт·год), 'DNS запити' (скільки запитів ВСЬОГО пройшло) або 'заблоковані DNS запити' (скільки з них заблоковано) — різні лічильники, 'телевізор'"},
-                    "start_date": {"type": "string", "description": "YYYY-MM-DD, або 'сьогодні' чи 'вчора'"},
+                    "start_date": {"type": "string", "description": "Дата так, як сказав користувач ('18.09', 'вчора', 'сьогодні') або YYYY-MM-DD; РІК НЕ ВИГАДУЙ, якщо користувач його не назвав. 'тиждень' — останні 7 днів (для 'коли востаннє')"},
                     "end_date": {"type": "string", "description": "Необов'язково, включно, той самий формат. Без нього — лише start_date"},
                 },
                 "required": ["entity_name", "start_date"],
@@ -290,6 +290,12 @@ except Exception:  # tzdata missing — fixed EEST offset, wrong only outside su
     _TZ = datetime.timezone(datetime.timedelta(hours=3))
 
 
+_WEEK_WORDS = {"тиждень", "тиждень", "7 днів", "останні 7 днів", "week", "останній тиждень"}
+
+
+_DM_RE = re.compile(r"^(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?$")
+
+
 def _parse_day(text: str) -> datetime.date | None:
     text = (text or "").strip().lower()
     today = datetime.datetime.now(_TZ).date()
@@ -297,7 +303,18 @@ def _parse_day(text: str) -> datetime.date | None:
         return today
     if text in ("вчора", "yesterday"):
         return today - datetime.timedelta(days=1)
+    # "18.09" / "18.09.2026": models guess the year wrong (asked for 18.09
+    # they sent 2023/2024 despite today's date in the prompt), so a year the
+    # user never gave is resolved here, in code — the latest such date not
+    # in the future. See ADR-0026.
+    m = _DM_RE.match(text)
     try:
+        if m:
+            day, month, year = int(m[1]), int(m[2]), m[3]
+            if year:
+                return datetime.date(int(year) + (2000 if len(year) == 2 else 0), month, day)
+            d = datetime.date(today.year, month, day)
+            return d if d <= today else datetime.date(today.year - 1, month, day)
         return datetime.date.fromisoformat(text)
     except ValueError:
         return None
@@ -327,7 +344,12 @@ def tool_get_sensor_history(args: dict) -> str:
         return f"Не знайдено пристрій '{hint}'."
     name = entity["attributes"].get("friendly_name")
 
-    first_day = _parse_day(args.get("start_date", ""))
+    raw_start = (args.get("start_date") or "").strip().lower()
+    if raw_start in _WEEK_WORDS:  # "коли востаннє X" needs a window, not one day
+        today = datetime.datetime.now(_TZ).date()
+        first_day, args = today - datetime.timedelta(days=7), {**args, "end_date": today.isoformat()}
+    else:
+        first_day = _parse_day(args.get("start_date", ""))
     if not first_day:
         return f"Не вдалось розпізнати дату '{args.get('start_date')}' — очікую YYYY-MM-DD, 'сьогодні' або 'вчора'."
     last_day = _parse_day(args["end_date"]) if args.get("end_date") else first_day

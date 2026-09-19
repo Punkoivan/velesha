@@ -13,12 +13,13 @@ import re
 from urllib.parse import urlparse
 
 # Tool results of these tools are never sent to a hosted model; the rest of
-# the request is finished by the local model instead. Default = the user's
-# choice (ADR-0025): home state and history/consumption stay local. Env
-# override, comma-separated (empty string = block nothing).
+# the request is finished by the local model instead. Default: nothing is
+# blocked — the user decided the paid API may see home state and history
+# (ADR-0025); this is the opt-in stricter mode. Comma-separated env, e.g.
+# HOSTED_BLOCKED_TOOLS=get_live_state,get_sensor_history
 BLOCKED_TOOLS = {
     t.strip()
-    for t in os.environ.get("HOSTED_BLOCKED_TOOLS", "get_live_state,get_sensor_history").split(",")
+    for t in os.environ.get("HOSTED_BLOCKED_TOOLS", "").split(",")
     if t.strip()
 }
 # search_knowledge is allowed in general (recipes, Jellyfin), but rows from
@@ -91,8 +92,9 @@ def has_blocked_result(messages: list[dict], tool_names: dict[str, str]) -> bool
         name = tool_names.get(m.get("tool_call_id"))
         if name in BLOCKED_TOOLS:
             return True
-        if name == "search_knowledge" and "ha_history" not in os.environ.get("HOSTED_ALLOW_HISTORY", ""):
-            if _HISTORY_MARKER in (m.get("content") or "") and "get_sensor_history" in BLOCKED_TOOLS:
+        # home-history rows are the same class as get_sensor_history
+        if name == "search_knowledge" and "get_sensor_history" in BLOCKED_TOOLS:
+            if _HISTORY_MARKER in (m.get("content") or ""):
                 return True
     return False
 

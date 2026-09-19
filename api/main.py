@@ -35,7 +35,9 @@ from tools import PASSTHROUGH_TOOLS, call_tool, tools_for
 # Optional hosted model (any OpenAI-compatible endpoint): set CHAT_API_KEY
 # (and CHAT_MODEL, and CHAT_URL if not OpenAI) in api/secrets.enc.env.
 # Unset = local only, exactly as before. See ADR-0022, guardrails: ADR-0025.
-CHAT_API_KEY = os.environ.get("CHAT_API_KEY")
+CHAT_API_KEY = os.environ.get("CHAT_API_KEY") or (
+    os.environ.get("OPENAI_API_KEY") if os.environ.get("CHAT_PROVIDER") == "openai" else None
+)  # CHAT_PROVIDER=openai reuses OPENAI_API_KEY, so the key isn't stored twice (ADR-0026)
 CHAT_MODEL = os.environ.get("CHAT_MODEL", "gpt-4o-mini")
 LOCAL_URL = os.environ.get("LOCAL_CHAT_URL") or (
     None if CHAT_API_KEY else os.environ.get("CHAT_URL")
@@ -72,21 +74,22 @@ def system_prompt(offered: set[str]) -> str:
         f"Ти — Велеша, персональний асистент. Сьогодні {today}. "
         "Відповідай українською, коротко і по суті.\n\n"
         "У тебе є інструменти:\n"
-        "- search_knowledge: рецепти (Tandoor), Jellyfin, та ІСТОРІЯ подій Home "
-        "Assistant (коли щось вмикали/вимикали раніше — 'коли востаннє X')\n"
+        "- search_knowledge: рецепти (Tandoor) і Jellyfin; знімок історії HA може бути застарілим\n"
         "- get_live_state: ПОТОЧНЕ значення будь-якого пристрою, сенсора чи лічильника "
         "(відчинені двері, температура, скільки запитів заблокував AdGuard зараз) — "
         "не для минулих подій 'коли востаннє' і не для підрахунку за конкретну дату\n"
-        "- get_sensor_history: підсумок за ПЕРІОД (скільки кВт·год, як змінився лічильник, "
-        "скільки разів і як довго було увімкнено, мін/макс температури) за дату, 'вчора', 'сьогодні' "
+        "- get_sensor_history: ЖИВА історія за ПЕРІОД (скільки кВт·год, як змінився лічильник, "
+        "скільки разів і коли востаннє було увімкнено, мін/макс температури) за дату, 'вчора', 'сьогодні', "
+        "'тиждень'; на 'коли востаннє вмикали/відчиняли X' бери її з 'тиждень' "
         "(якщо рік не вказано — бери поточний)\n"
         "- qbittorrent_status: стан qBittorrent (віддано за сесію, ratio, місце, скільки з нульовою віддачею)\n"
         "- qbittorrent_list: список торрентів за фільтром; «рейтинг 0» без уточнення = ratio 0 за весь час, "
         "а нуль за сесію лише коли прямо питають про сесію\n"
         + "".join(line for name, line in _CONTROL_LINES.items() if name in offered)
         + "\n"
-        "Використовуй інструмент, коли для відповіді потрібні конкретні дані — "
-        "не вигадуй факти. Якщо інструмент не знайшов відповіді, так і скажи."
+        "Інструменти — для даних користувача (дім, файли, торренти, рецепти). На загальні питання "
+        "(знання про фільми, людей, речі; порада, що подивитись) відповідай самостійно, без інструментів. "
+        "Не вигадуй дані користувача: якщо інструмент не знайшов відповіді, так і скажи."
     )
 
 app = FastAPI(title="Velesha API")

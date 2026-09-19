@@ -49,3 +49,11 @@ usable via `/api/conversation/process` or HA's Assist pipeline.
 - Small-model residual: even with correct, correctly-sorted tool
   output, Qwen2.5-3B occasionally misreads which line in a list is the
   answer (see ADR-0018's Consequences) — not common, but not zero.
+
+## Model selection
+
+Local Qwen2.5-3B by default. `CHAT_PROVIDER=openai CHAT_MODEL=gpt-4.1-mini`
+(reuses `OPENAI_API_KEY` from `api/secrets.enc.env`) switches to OpenAI —
+see ADR-0026 for the comparison and ADR-0025 for the guardrails (secret
+masking, daily token budget, local fallback). Compare models with
+`api/eval_models.py local|openai|gemini` (`EVAL_RUNS=3` for a rate).
