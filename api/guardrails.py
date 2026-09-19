@@ -25,7 +25,7 @@ BLOCKED_TOOLS = {
 # search_knowledge is allowed in general (recipes, Jellyfin), but rows from
 # the ha_history collection are the same class as get_sensor_history.
 _HISTORY_MARKER = "[ha_history]"
-DAILY_TOKEN_BUDGET = int(os.environ.get("DAILY_TOKEN_BUDGET", "500000"))
+DAILY_TOKEN_BUDGET = int(os.environ.get("DAILY_TOKEN_BUDGET", "1000000"))
 # Web search is billed per call on top of tokens, so it has its own daily cap.
 DAILY_WEB_SEARCHES = int(os.environ.get("DAILY_WEB_SEARCHES", "15"))
 _USAGE_FILE = pathlib.Path(__file__).parent / "data" / "usage.json"

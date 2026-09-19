@@ -49,8 +49,10 @@ are never touched.
   ADR-0021).
 
 **Cost controls:**
-- **Daily token budget** (`DAILY_TOKEN_BUDGET`, default 500 000, user's
-  choice; ≈30–50 tool-using questions), counted from the provider's
+- **Daily token budget** (`DAILY_TOKEN_BUDGET`, default 1 000 000 — raised
+  from an initial 500 000 the same day at the user's call after ~500k
+  proved to be ≈30–50 tool-using questions and testing shares the counter;
+  the user observed the day's spend at about 20 cents), counted from the provider's
   `usage.total_tokens`, persisted in `api/data/usage.json` (gitignored,
   older days dropped). When exhausted the agent uses the local model
   instead of failing.
