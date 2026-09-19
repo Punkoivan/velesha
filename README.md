@@ -24,9 +24,12 @@ all three active collections. See
 
 Phase 3 (interface): `api/` is wired into Home Assistant as
 `conversation.velesha` (via HA's built-in `llama_cpp` integration — see
-[ADR-0013](docs/adr/0013-ha-llama-cpp-integration-streaming-required.md)),
-answering retrieval-grounded questions through HA's own conversation
-API. Voice/avatar not started — see [`PLAN.md`](PLAN.md).
+[ADR-0013](docs/adr/0013-ha-llama-cpp-integration-streaming-required.md)).
+It's a tool-calling agent, not blind RAG — see
+[ADR-0018](docs/adr/0018-tool-calling-agent-replaces-blind-rag.md) — so
+it can search indexed knowledge, check a device's live state, or
+compute energy usage, deciding per-question which (if any) it needs.
+Voice/avatar not started — see [`PLAN.md`](PLAN.md).
 
 ## Stack
 
@@ -82,10 +85,11 @@ LD_LIBRARY_PATH=./build/bin ./build/bin/llama-server \
 cd cli
 sops --config /dev/null exec-env ../secrets.enc.env 'uv run ask.py "коли я востаннє дивився мумію?"'
 
-# 6. API server, for HA integration (ADR-0011, ADR-0013):
+# 6. API server / agent, for HA integration (ADR-0011, ADR-0013, ADR-0018)
+#    — needs its own HA secret too (tool calls live HA state/history):
 cd api
-sops --config /dev/null exec-env ../secrets.enc.env \
-  'uv run uvicorn main:app --host 0.0.0.0 --port 8090'
+sops exec-env ../secrets.enc.env \
+  'sops --config /dev/null exec-env secrets.enc.env "uv run uvicorn main:app --host 0.0.0.0 --port 8090"'
 # Then in HA: add the "llama.cpp" integration, base_url
 # http://<this-host-LAN-IP>:8090/v1, no API key — see api/README.md.
 ```

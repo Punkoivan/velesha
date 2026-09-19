@@ -30,14 +30,19 @@ One search surface across all sources, not per-source scripts.
       ADR-0010
 
 ### Phase 3 — Interface (integration done, rest not started)
-- [x] OpenAI-compatible API (`api/`) — retrieval-grounded
-      `/v1/chat/completions` — see ADR-0011
+- [x] OpenAI-compatible API (`api/`) — see ADR-0011
 - [x] Wired into Home Assistant as `conversation.velesha`, via HA's
       built-in `llama_cpp` integration (not "OpenAI Conversation" — that
       dropped custom-`base_url` support; see ADR-0013). Streaming
-      implemented (HA requires it). Verified end-to-end via
-      `/api/conversation/process` — Q&A works; device control/live state
-      does not (HA's Assist tool schema is received but not acted on).
+      implemented (HA requires it).
+- [x] **Tool-calling agent, not blind RAG** (ADR-0018): `api/` now gives
+      the model three read-only tools — `search_knowledge` (the old
+      always-on retrieval, now on-demand), `get_live_state` (live HA
+      device/sensor state — the door-sensor "RAG only sees a snapshot"
+      gap), `get_energy_usage` (computed kWh delta — not a retrievable
+      fact at all). Verified end-to-end through HA on three real bugs
+      this fixed. Device control still out of scope (HA's Assist tool
+      schema received, not acted on).
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar
@@ -59,12 +64,13 @@ Both sources re-indexed and verified working there.
   Deliberately deferred — staying fully local for now.
 - **Agentic write-back** — e.g. "find a borscht recipe in my notes; if
   it's not there, search the web, pick the best one, add it to the
-  vault." Needs two things Velesha doesn't have yet: a web search tool,
-  and incremental indexing (today's `index.py` always re-embeds
-  everything from scratch). Given the local chat model (Qwen2.5-3B on
-  CPU) is not a reliable open-ended tool-use planner, this would likely
-  be a fixed orchestration script (search → fallback → LLM picks/
-  formats → write) rather than a free tool-calling loop.
+  base." Needs two things Velesha doesn't have yet: a web search tool
+  and a write tool (Tandoor's API supports it, ADR-0015, just not
+  exposed to the agent yet). ADR-0018 showed Qwen2.5-3B is a more
+  capable tool-caller than originally assumed here (correct tool +
+  arguments across every test after two small prompt fixes) — still
+  worth a lower `MAX_TOOL_ITERATIONS`-style bound and close testing for
+  a multi-step search→fallback→pick→write flow, not fully free-form.
 - **Arize Phoenix for profiling/tracing** — self-hosted, OpenTelemetry-
   based, would instrument `api/main.py`'s retrieval and generation calls
   as separate spans. Local-first, consistent with the rest of the stack.
@@ -77,12 +83,9 @@ Both sources re-indexed and verified working there.
   ever needed instead of fuzzy relevance.
 - **Cross-conversation memory for `conversation.velesha`** — right now
   `api/` is stateless per request; within one HA conversation turn HA
-  resends the full transcript so the chat model has short-term memory,
-  but retrieval only ever runs against the latest user message, not the
-  conversation so far ("а скільки там калорій" without repeating the
-  recipe name won't retrieve the right one), and nothing persists once a
-  conversation ends. Deliberately deferred — revisit retrieval-with-
-  conversation-context and any longer-term memory together.
+  resends the full transcript so the model has short-term memory and can
+  in principle phrase a `search_knowledge` query using earlier context,
+  but nothing persists once a conversation ends. Deliberately deferred.
 
 ## Notes
 

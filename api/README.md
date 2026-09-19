@@ -1,25 +1,29 @@
 # API
 
-OpenAI-compatible `/v1/chat/completions` server over Velesha's RAG
-pipeline (retrieval across `cli/search.py`'s collections + generation via
-the local chat model) — wired into Home Assistant via HA's built-in
-`llama_cpp` integration (**not** "OpenAI Conversation" — see ADR-0013 for
-why). Works with any OpenAI-chat-API client, streaming or not.
+OpenAI-compatible `/v1/chat/completions` server — Velesha as a
+tool-calling agent (ADR-0018), not blind RAG. The model decides when to
+call `search_knowledge` (recipes/Jellyfin/HA history), `get_live_state`
+(current device/sensor state), or `get_energy_usage` (kWh delta for a
+date) — instead of every question getting the same fixed context
+regardless of whether it's even answerable that way. Wired into Home
+Assistant via HA's built-in `llama_cpp` integration (**not** "OpenAI
+Conversation" — see ADR-0013 for why).
 
 ## Running it
 
-Needs the embedding server (8083) and chat server (8084) from the repo
-root README already up, plus Qdrant.
+Needs the embedding server (8083) and a **tool-calling-capable** chat
+server (8084, `--jinja`, Qwen2.5-3B-Instruct verified working) from the
+repo root README already up, plus Qdrant.
 
 ```bash
 uv sync
-sops --config /dev/null exec-env ../secrets.enc.env \
-  'uv run uvicorn main:app --host 0.0.0.0 --port 8090'
+sops exec-env ../secrets.enc.env \
+  'sops --config /dev/null exec-env secrets.enc.env "uv run uvicorn main:app --host 0.0.0.0 --port 8090"'
 ```
 
 ```bash
 curl http://localhost:8090/v1/chat/completions -H 'Content-Type: application/json' -d '{
-  "messages": [{"role": "user", "content": "коли я востаннє дивився мумію?"}]
+  "messages": [{"role": "user", "content": "скільки 18.09 числа пралка використала електроенергії?"}]
 }'
 ```
 
@@ -34,11 +38,13 @@ usable via `/api/conversation/process` or HA's Assist pipeline.
 
 ## Limitations
 
-- HA's Assist function-calling schema (`tools` in the request — device
-  control, live entity state) is received but dropped: `conversation.velesha`
-  answers retrieval-grounded questions, it does **not** control devices
-  or answer "what's the current state of X" questions. A real
+- Read-only tools only — `search_knowledge`/`get_live_state`/
+  `get_energy_usage` never change anything. HA's Assist function-calling
+  schema (device control, `intent__HassTurnOn` etc.) is still received
+  but dropped: `conversation.velesha` can't turn things on/off. A
   device-control agent is future work.
 - Any system message the caller sends (e.g. HA's own house-description
-  prompt) is replaced with Velesha's own retrieval-augmented one, not
-  merged.
+  prompt) is replaced with Velesha's own tool-aware one, not merged.
+- Small-model residual: even with correct, correctly-sorted tool
+  output, Qwen2.5-3B occasionally misreads which line in a list is the
+  answer (see ADR-0018's Consequences) — not common, but not zero.

@@ -1,18 +1,24 @@
-"""OpenAI-compatible chat API over Velesha's RAG pipeline.
+"""OpenAI-compatible chat API — Velesha as a tool-calling agent, not blind RAG.
 
-A long-running HTTP server, not a one-shot script — this is what Home
-Assistant's built-in "OpenAI Conversation" integration (or anything else
-speaking the OpenAI chat API) can point at directly, instead of pointing
-at the chat model's own llama-server and losing retrieval. See ADR-0011.
+A long-running HTTP server — the integration point for Home Assistant's
+built-in `llama_cpp` integration (ADR-0013), or anything else speaking
+the OpenAI chat API.
 
-Same retrieve-then-generate logic as cli/ask.py, wrapped as a server
-instead of a CLI invocation.
+Replaces the earlier always-on retrieve-then-generate pipeline
+(ADR-0011) with real tool calling (ADR-0018): the model decides when to
+search Velesha's indexed knowledge, check a device's live state, or
+compute energy usage, instead of every question always getting the same
+blind context injection regardless of whether it's relevant or even
+answerable that way (a live-state or delta-computation question can't be
+answered from a static indexed snapshot at all — ADR-0018's whole point).
 
 Usage:
     sops exec-env ../secrets.enc.env \\
-      'uv run uvicorn main:app --host 0.0.0.0 --port 8090'
+      'sops exec-env secrets.enc.env "uv run uvicorn main:app --host 0.0.0.0 --port 8090"'
 """
 
+import datetime
+import json
 import os
 import time
 import uuid
@@ -21,80 +27,41 @@ import requests
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from qdrant_client import QdrantClient
 
-EMBED_URL = os.environ.get("EMBED_URL", "http://localhost:8083/embedding")
+from tools import TOOLS, call_tool
+
 CHAT_URL = os.environ.get("CHAT_URL", "http://localhost:8084/v1/chat/completions")
+MAX_TOOL_ITERATIONS = 4
 
-# obsidian_recipes intentionally excluded: recipes migrated to Tandoor,
-# see ADR-0015 — the collection still exists in Qdrant but is stale.
-COLLECTIONS = ["ha_history", "jellyfin_library", "tandoor_recipes"]
-CHUNKS_PER_COLLECTION = 4  # see ADR-0016 — per collection, not a global cap
-CANDIDATE_POOL = 20  # see ADR-0017 — wider semantic net before picking by recency
-MAX_CHUNK_CHARS = 600  # see ADR-0010 — keeps the chat model's context from overflowing
 
-SYSTEM_PROMPT = (
-    "Ти — Велеша, персональний асистент. Відповідай українською, коротко "
-    "і по суті, спираючись ТІЛЬКИ на наданий контекст. Якщо в контексті "
-    "немає відповіді — так і скажи, не вигадуй."
-)
+def system_prompt() -> str:
+    # The model has no notion of "today" on its own — without this it
+    # guesses a training-era year (observed: "18.09" -> "2022-09-18")
+    # when calling get_energy_usage with a dateless user phrase. See
+    # ADR-0018.
+    today = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=3))).strftime("%Y-%m-%d")
+    return (
+        f"Ти — Велеша, персональний асистент. Сьогодні {today}. "
+        "Відповідай українською, коротко і по суті.\n\n"
+        "У тебе є інструменти:\n"
+        "- search_knowledge: рецепти (Tandoor), Jellyfin, та ІСТОРІЯ подій Home "
+        "Assistant (коли щось вмикали/вимикали раніше — 'коли востаннє X')\n"
+        "- get_live_state: ТІЛЬКИ поточний (просто зараз) стан одного "
+        "пристрою/сенсора — не для питань 'коли' чи 'скільки за день'\n"
+        "- get_energy_usage: скільки електроенергії використав пристрій за конкретну дату "
+        "(якщо рік не вказано користувачем — бери поточний рік)\n\n"
+        "Використовуй інструмент, коли для відповіді потрібні конкретні дані — "
+        "не вигадуй факти. Якщо інструмент не знайшов відповіді, так і скажи."
+    )
 
 app = FastAPI(title="Velesha API")
-
-
-def qdrant_client() -> QdrantClient:
-    """See ADR-0006: shared ha-addon-qdrant instance, not abox."""
-    url = os.environ.get("QDRANT_URL", "http://localhost:6333")
-    kwargs = {}
-    if api_key := os.environ.get("QDRANT_API_KEY"):
-        kwargs["api_key"] = api_key
-    return QdrantClient(url=url, **kwargs)
-
-
-def embed(text: str) -> list[float]:
-    resp = requests.post(EMBED_URL, json={"content": text}, timeout=60)
-    resp.raise_for_status()
-    embedding = resp.json()[0]["embedding"]
-    if isinstance(embedding[0], list):
-        embedding = embedding[0]
-    return embedding
-
-
-def retrieve_context(query: str) -> str:
-    client = qdrant_client()
-    vector = embed(query)
-
-    # Per-collection limit, not a global top-N after merging — otherwise a
-    # broad recipe question loses recipe results to unrelated but
-    # higher-scoring hits from other collections (e.g. HA history events
-    # mentioning "духовка" outscoring actual baking recipes). See ADR-0016.
-    lines = []
-    for collection in COLLECTIONS:
-        if not client.collection_exists(collection):
-            continue
-        # Fetch a wider candidate pool than we'll actually use: ha_history
-        # entries for one entity are near-duplicate text ("телевізор:
-        # [у]вимкнено о HH:MM, DD.MM.YYYY"), so the true most recent event
-        # isn't reliably inside a narrow top-K by cosine score alone
-        # (confirmed in testing — it was missing from the top 4 outright).
-        # Casting a wider net and then picking by actual timestamp fixes
-        # that; harmless for collections without a timestamp payload field,
-        # where the pool just gets truncated back to CHUNKS_PER_COLLECTION
-        # in score order same as before. See ADR-0017.
-        results = client.query_points(
-            collection_name=collection, query=vector, limit=CANDIDATE_POOL, with_payload=True
-        ).points
-        results = sorted(results, key=lambda r: r.payload.get("last_changed") or "", reverse=True)
-        results = results[:CHUNKS_PER_COLLECTION]
-        for r in results:
-            text = " ".join(r.payload.get("text", "").split())[:MAX_CHUNK_CHARS]
-            lines.append(f"[{collection}] {text}")
-    return "\n".join(lines)
 
 
 class ChatMessage(BaseModel):
     role: str
     content: str | None = None
+    tool_calls: list[dict] | None = None
+    tool_call_id: str | None = None
 
 
 class ChatCompletionRequest(BaseModel):
@@ -102,15 +69,7 @@ class ChatCompletionRequest(BaseModel):
     messages: list[ChatMessage]
     max_tokens: int = 400
     temperature: float = 0.2
-    stream: bool = False
-
-
-def stream_upstream(payload: dict):
-    with requests.post(CHAT_URL, json=payload, timeout=120, stream=True) as resp:
-        resp.raise_for_status()
-        for chunk in resp.iter_content(chunk_size=1024):
-            if chunk:
-                yield chunk
+    stream: bool = False  # always answered non-streamed internally, see sse_chunk
 
 
 @app.get("/health")
@@ -123,37 +82,74 @@ def list_models():
     return {"object": "list", "data": [{"id": "velesha", "object": "model", "owned_by": "velesha"}]}
 
 
+def run_agent(messages: list[dict]) -> str:
+    for _ in range(MAX_TOOL_ITERATIONS):
+        resp = requests.post(
+            CHAT_URL,
+            json={
+                "messages": messages,
+                "tools": TOOLS,
+                "tool_choice": "auto",
+                "max_tokens": 400,
+                "temperature": 0.2,
+                "repeat_penalty": 1.15,  # Qwen2.5-3B loops on longer answers otherwise (ADR-0018)
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        message = resp.json()["choices"][0]["message"]
+
+        tool_calls = message.get("tool_calls")
+        if not tool_calls:
+            return message.get("content") or ""
+
+        messages.append(message)
+        for tc in tool_calls:
+            fn = tc["function"]
+            result = call_tool(fn["name"], fn["arguments"])
+            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
+
+    return "Забагато кроків міркування — не вдалось отримати остаточну відповідь."
+
+
+def sse_chunk(content: str) -> bytes:
+    created = int(time.time())
+    chat_id = f"chatcmpl-{uuid.uuid4().hex}"
+    delta = {
+        "id": chat_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": "velesha",
+        "choices": [{"index": 0, "delta": {"role": "assistant", "content": content}, "finish_reason": None}],
+    }
+    done = {
+        "id": chat_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": "velesha",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+    }
+    body = f"data: {json.dumps(delta, ensure_ascii=False)}\n\n"
+    body += f"data: {json.dumps(done, ensure_ascii=False)}\n\n"
+    body += "data: [DONE]\n\n"
+    return body.encode()
+
+
 @app.post("/v1/chat/completions")
 def chat_completions(req: ChatCompletionRequest):
-    user_messages = [m for m in req.messages if m.role == "user"]
-    question = (user_messages[-1].content or "") if user_messages else ""
+    messages = [{"role": "system", "content": system_prompt()}]
+    messages += [{"role": m.role, "content": m.content or ""} for m in req.messages if m.role != "system"]
 
-    context = retrieve_context(question)
-    augmented_system = f"{SYSTEM_PROMPT}\n\nКонтекст:\n{context}" if context else SYSTEM_PROMPT
-
-    upstream_messages = [{"role": "system", "content": augmented_system}]
-    upstream_messages += [
-        {"role": m.role, "content": m.content or ""} for m in req.messages if m.role != "system"
-    ]
-
-    payload = {
-        "messages": upstream_messages,
-        "max_tokens": req.max_tokens,
-        "temperature": req.temperature,
-    }
+    answer = run_agent(messages)
 
     if req.stream:
-        return StreamingResponse(stream_upstream({**payload, "stream": True}), media_type="text/event-stream")
-
-    resp = requests.post(CHAT_URL, json=payload, timeout=120)
-    resp.raise_for_status()
-    upstream = resp.json()
+        return StreamingResponse(iter([sse_chunk(answer)]), media_type="text/event-stream")
 
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
         "created": int(time.time()),
         "model": "velesha",
-        "choices": upstream["choices"],
-        "usage": upstream.get("usage", {}),
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": answer}, "finish_reason": "stop"}],
+        "usage": {},
     }
