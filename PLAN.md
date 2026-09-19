@@ -47,6 +47,9 @@ One search surface across all sources, not per-source scripts.
       starts a movie/series (next unwatched episode) on Kodi via Jellyfin's
       session API, waits for Kodi to boot, Kodi-only allowlist, offered to
       the model only when the user's message has an explicit command verb.
+- [x] **Jellyfin playback control** (ADR-0022): pause/resume/stop/next/
+      previous on Kodi. Hosted-model switch (`CHAT_API_KEY`) coded but
+      untested until a key is supplied.
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar

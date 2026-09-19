@@ -114,6 +114,28 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "control_jellyfin_playback",
+            "description": (
+                "Керувати тим, що ЗАРАЗ грає на Kodi: пауза, продовжити, зупинити, "
+                "наступна серія, попередня серія. Для запуску нового фільму/серіалу "
+                "за назвою є play_on_jellyfin_device."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["pause", "resume", "stop", "next", "previous"],
+                        "description": "pause — пауза, resume — продовжити, stop — зупинити, next/previous — наступна/попередня серія",
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
 ]
 
 
@@ -338,8 +360,11 @@ def tool_get_sensor_history(args: dict) -> str:
 # in testing: the 3B model called the play tool on "що є з Декстера?" and
 # "порадь серіал на вечір" (ADR-0021). Deliberately a code gate, not a
 # model decision.
-CONTROL_TOOLS = {"play_on_jellyfin_device"}
-_COMMAND_RE = re.compile(r"(включ|увімкн|ввімкн|запуст|постав|відтвор|\bplay\b)", re.IGNORECASE)
+CONTROL_TOOLS = {"play_on_jellyfin_device", "control_jellyfin_playback"}
+_COMMAND_RE = re.compile(
+    r"(включ|увімкн|ввімкн|запуст|постав|відтвор|\bplay\b|пауз|продовж|зупин|стоп|наступн|попередн|далі|пропуст|\bnext\b|\bstop\b|\bpause\b)",
+    re.IGNORECASE,
+)
 
 
 def tools_for(user_text: str) -> list[dict]:
@@ -407,11 +432,44 @@ def tool_play_on_jellyfin_device(args: dict, dry_run: bool = False) -> str:
     return f"Запущено '{what}' на {sess['DeviceName']}."
 
 
+_PLAYSTATE = {"pause": "Pause", "resume": "Unpause", "stop": "Stop"}
+
+
+def tool_control_jellyfin_playback(args: dict) -> str:
+    action = args.get("action", "")
+    sess = _find_play_session()
+    if not sess:
+        return "Kodi зараз не в мережі (сесії Jellyfin немає)."
+    playing = sess.get("NowPlayingItem")
+    if not playing:
+        return "На Kodi зараз нічого не грає."
+
+    if action in _PLAYSTATE:
+        jellyfin_client.playstate(sess["Id"], _PLAYSTATE[action])
+        done = {"pause": "Поставлено на паузу", "resume": "Продовжено", "stop": "Зупинено"}[action]
+        return f"{done}: {playing.get('SeriesName') or playing.get('Name')}."
+
+    if action in ("next", "previous"):
+        if playing.get("Type") != "Episode" or not playing.get("SeriesId"):
+            return "Зараз грає не серіал — наступної чи попередньої серії немає."
+        step = 1 if action == "next" else -1
+        ep = jellyfin_client.adjacent_episode(
+            playing["SeriesId"], playing["ParentIndexNumber"], playing["IndexNumber"], step
+        )
+        if not ep:
+            return "Це " + ("остання" if step == 1 else "перша") + " серія серіалу."
+        jellyfin_client.play(sess["Id"], ep["Id"])
+        return f"Запущено: {playing['SeriesName']}, сезон {ep['ParentIndexNumber']} серія {ep['IndexNumber']} «{ep['Name']}»."
+
+    return f"Невідома дія '{action}'."
+
+
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
     "get_sensor_history": tool_get_sensor_history,
     "play_on_jellyfin_device": tool_play_on_jellyfin_device,
+    "control_jellyfin_playback": tool_control_jellyfin_playback,
 }
 
 

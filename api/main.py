@@ -31,6 +31,13 @@ from pydantic import BaseModel
 from tools import call_tool, tools_for
 
 CHAT_URL = os.environ.get("CHAT_URL", "http://localhost:8084/v1/chat/completions")
+# Optional hosted model (any OpenAI-compatible endpoint): set CHAT_API_KEY
+# (and CHAT_MODEL, and CHAT_URL if not OpenAI) in api/secrets.enc.env.
+# Unset = the local llama-server, exactly as before. See ADR-0022.
+CHAT_API_KEY = os.environ.get("CHAT_API_KEY")
+CHAT_MODEL = os.environ.get("CHAT_MODEL", "gpt-4o-mini")
+if CHAT_API_KEY and "CHAT_URL" not in os.environ:
+    CHAT_URL = "https://api.openai.com/v1/chat/completions"
 MAX_TOOL_ITERATIONS = 4
 
 
@@ -52,7 +59,13 @@ def system_prompt(control: bool) -> str:
         "- get_sensor_history: підсумок за ПЕРІОД (скільки кВт·год, як змінився лічильник, "
         "скільки разів і як довго було увімкнено, мін/макс температури) за дату, 'вчора', 'сьогодні' "
         "(якщо рік не вказано — бери поточний)\n"
-        + ("- play_on_jellyfin_device: запустити фільм/серіал з Jellyfin на Kodi\n" if control else "")
+        + (
+            "- play_on_jellyfin_device: запустити фільм/серіал за назвою на Kodi\n"
+            "- control_jellyfin_playback: керувати тим, що зараз грає на Kodi — пауза, продовжити, "
+            "зупинити, наступна/попередня серія (НЕ передавай це як назву фільму)\n"
+            if control
+            else ""
+        )
         + "\n"
         "Використовуй інструмент, коли для відповіді потрібні конкретні дані — "
         "не вигадуй факти. Якщо інструмент не знайшов відповіді, так і скажи."
@@ -88,20 +101,22 @@ def list_models():
 
 def run_agent(messages: list[dict], tools: list[dict]) -> str:
     for _ in range(MAX_TOOL_ITERATIONS):
-        payload = {
-            "messages": messages,
-            "tools": tools,
-            "tool_choice": "auto",
-            "max_tokens": 400,
-            "temperature": 0.2,
-            "repeat_penalty": 1.15,  # Qwen2.5-3B loops on longer answers otherwise (ADR-0018)
-        }
+        payload = {"messages": messages, "tools": tools, "tool_choice": "auto"}
+        headers = {}
+        if CHAT_API_KEY:
+            headers["Authorization"] = f"Bearer {CHAT_API_KEY}"
+            payload["model"] = CHAT_MODEL
+            payload["max_completion_tokens"] = 600
+        else:
+            payload["max_tokens"] = 400
+            payload["temperature"] = 0.2
+            payload["repeat_penalty"] = 1.15  # Qwen2.5-3B loops on longer answers otherwise (ADR-0018)
         # llama-server answers 500 when the model emits output its
         # tool-call parser rejects (occasional garbled tokens from the
         # quantized 3B model, seen in testing) — one retry usually
         # succeeds since sampling isn't deterministic; never surface a 500.
         for attempt in range(2):
-            resp = requests.post(CHAT_URL, json=payload, timeout=120)
+            resp = requests.post(CHAT_URL, json=payload, headers=headers, timeout=120)
             if resp.status_code != 500:
                 break
         if resp.status_code == 500:

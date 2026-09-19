@@ -60,3 +60,24 @@ def play(session_id: str, item_id: str) -> None:
         timeout=15,
     )
     r.raise_for_status()
+
+
+def playstate(session_id: str, command: str) -> None:
+    """Pause / Unpause / Stop on an existing playback session."""
+    r = _session.post(f"{URL}/Sessions/{session_id}/Playing/{command}", timeout=15)
+    r.raise_for_status()
+
+
+def adjacent_episode(series_id: str, season: int, index: int, step: int) -> dict | None:
+    """The episode `step` positions after (+1) or before (-1) season/index."""
+    r = _session.get(f"{URL}/Shows/{series_id}/Episodes", params={"UserId": USER_ID}, timeout=15)
+    r.raise_for_status()
+    eps = sorted(
+        (e for e in r.json()["Items"] if e.get("ParentIndexNumber") is not None and e.get("IndexNumber") is not None),
+        key=lambda e: (e["ParentIndexNumber"], e["IndexNumber"]),
+    )
+    for i, e in enumerate(eps):
+        if (e["ParentIndexNumber"], e["IndexNumber"]) == (season, index):
+            j = i + step
+            return eps[j] if 0 <= j < len(eps) else None
+    return None
