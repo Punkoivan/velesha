@@ -25,6 +25,11 @@ from search_backend import COLLECTIONS, CANDIDATE_POOL, CHUNKS_PER_COLLECTION, M
 
 # Entities whose friendly_name is real but who are pure device-management
 # noise for "what's the current state" questions — never a useful match.
+# Judged by device_class/domain, not by entity-id spelling: HA renamed
+# sensor.*_batareia to *_batareya and the id-based filter silently stopped
+# working (ADR-0027).
+_NOISE_CLASSES = {"battery", "identify", "firmware", "update", "restart"}
+_NOISE_DOMAINS = {"update", "button", "select"}
 _NOISE_SUBSTRINGS = (
     "identifikuvati", "firmware", "child_lock", "power_on_state",
     "backlight_mode", "battery", "batareia",
@@ -214,6 +219,14 @@ def _state_uk(entity: dict) -> str:
     return _STATE_UK.get(state, state)
 
 
+def _fmt_since(iso: str | None) -> str:
+    if not iso:
+        return "невідомо"
+    ts = datetime.datetime.fromisoformat(iso).astimezone(_TZ)
+    now = datetime.datetime.now(_TZ)
+    return ts.strftime("%H:%M") if ts.date() == now.date() else ts.strftime("%d.%m %H:%M")
+
+
 def resolve_entities(hint: str, unit: str | None = None, limit: int = 1) -> list[dict]:
     states = ha_client.get_states()
     candidates = []
@@ -223,6 +236,8 @@ def resolve_entities(hint: str, unit: str | None = None, limit: int = 1) -> list
             continue
         entity_id = s["entity_id"]
         if any(noise in entity_id.lower() for noise in _NOISE_SUBSTRINGS):
+            continue
+        if entity_id.split(".", 1)[0] in _NOISE_DOMAINS or s.get("attributes", {}).get("device_class") in _NOISE_CLASSES:
             continue
         if unit and s.get("attributes", {}).get("unit_of_measurement") != unit:
             continue
@@ -235,7 +250,11 @@ def resolve_entities(hint: str, unit: str | None = None, limit: int = 1) -> list
     # alone (a 3B model drifts into unrelated entities when handed five
     # loosely-related lines), a genuine tie returns several to choose from.
     best = candidates[0][0]
-    return [s for score, _, s in candidates[:limit] if score >= best - 0.1]
+    near = [s for score, _, s in candidates if score >= best - 0.1][:limit]
+    # Duplicate sensors of one physical thing can disagree (a stale
+    # "вхідні двері Відкриття" said closed for hours while the real one said
+    # open): the most recently changed one is the one to trust.
+    return sorted(near, key=lambda s: s.get("last_changed", ""), reverse=True)
 
 
 def resolve_entity(hint: str, unit: str | None = None) -> dict | None:
@@ -280,7 +299,10 @@ def tool_get_live_state(args: dict) -> str:
         attrs = e.get("attributes", {})
         unit = attrs.get("unit_of_measurement", "")
         state = _state_uk(e)
-        lines.append(f"{attrs.get('friendly_name')}: {state} {unit}".rstrip())
+        since = _fmt_since(e.get("last_changed"))
+        lines.append(f"{attrs.get('friendly_name')}: {state} {unit}".rstrip() + f" (змінилось {since})")
+    if len(lines) > 1:
+        lines.append("Якщо показання різняться — вірне те, що змінилось пізніше (перший рядок).")
     return "\n".join(lines)
 
 

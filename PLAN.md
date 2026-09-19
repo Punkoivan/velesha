@@ -60,7 +60,7 @@ One search surface across all sources, not per-source scripts.
       routing, daily token budget with local fallback, loop stop; tested
       against a stub. Free-Gemini lane + agentgateway still to do.
 - [x] **Model comparison, OpenAI `gpt-4.1-mini` as working model** (ADR-0026):
-      local 3B 6/10, gpt-4.1-mini 30/30, free Gemini tool-choice 10/10 but
+      local 3B 7/10, gpt-4.1-mini 30/30, free Gemini tool-choice 10/10 but
       rate-limited. Eval harness `api/eval_models.py`. Free-Gemini lane,
       agentgateway and a multi-step Tarantino→Toloka test still to do.
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)

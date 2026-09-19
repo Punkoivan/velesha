@@ -25,7 +25,7 @@ in full.
 
 | Backend | Score | Latency | Notes |
 |---|---|---|---|
-| Local Qwen2.5-3B | **6/10** | 3–80 s per question, 282 s total | wrong door state (said open, was closed), used `get_live_state` for a history question, listed non-Tarantino films as Tarantino's, refused a general-knowledge question |
+| Local Qwen2.5-3B | **7/10** | 3–80 s per question, 282 s total | used `get_live_state` for a history question (AdGuard), listed non-Tarantino films as Tarantino's, refused a general-knowledge question |
 | OpenAI `gpt-4.1-mini` | **30/30** (3 runs × 10) | ~2 s per question | ~2.7k tokens/question (~80k for 30 runs) |
 | Gemini `gemini-flash-latest` (free) | tool choice **10/10**, general **2/2** | 2–11 s | 4 of 10 requests in a burst were refused by the service (one 503, three 429) until spaced 20 s apart |
 
@@ -70,7 +70,7 @@ in this change:
 ## Alternatives considered
 
 - **Bigger OpenAI model first** — not needed: 30/30 on this set.
-- **Stay local** — 6/10 with real errors on the questions the user
+- **Stay local** — 7/10 with real errors on the questions the user
   actually asks; the guardrails make the hosted route acceptable.
 - **Gemini free as the main model** — rate limits and the training-data
   policy make it a poor fit for a tool-using agent that handles home data.
@@ -87,3 +87,15 @@ in this change:
 - Ground truth for the washing-machine question is pinned to 18.09 and
   will expire when HA's ~10-day history rolls over.
 - To revert to fully local: restart the server without `CHAT_PROVIDER`.
+
+## Correction (same day)
+
+The first version of this ADR said the local model got the door state
+wrong. **That was my mistake**: the local run happened at 15:29–15:33
+Kyiv time, after the door had been opened (15:21:55), so its answer
+"відчинені" was correct and its original PASS stood; I re-scored the saved
+answer assuming the door was closed. The local score is **7/10**, not
+6/10. The door question was also unreliable for a second reason found the
+same hour: HA has two sensors for one door and the stale one contradicted
+the live one — see ADR-0027. After that fix the door question is 3/3
+(OpenAI) and 2/2 (local) with the truth being "open".
