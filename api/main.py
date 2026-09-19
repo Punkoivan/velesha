@@ -41,7 +41,20 @@ if CHAT_API_KEY and "CHAT_URL" not in os.environ:
 MAX_TOOL_ITERATIONS = 4
 
 
-def system_prompt(control: bool) -> str:
+_CONTROL_LINES = {
+    "play_on_jellyfin_device": "- play_on_jellyfin_device: запустити фільм/серіал за назвою на Kodi\n",
+    "control_jellyfin_playback": (
+        "- control_jellyfin_playback: керувати тим, що зараз грає на Kodi — пауза, продовжити, "
+        "зупинити, наступна/попередня серія (НЕ передавай це як назву фільму)\n"
+    ),
+    "qbittorrent_add": (
+        "- qbittorrent_add: додати торрент за посиланням з повідомлення; категорію бери ЛИШЕ з "
+        "слів користувача, інакше запитай яку\n"
+    ),
+}
+
+
+def system_prompt(offered: set[str]) -> str:
     # The model has no notion of "today" on its own — without this it
     # guesses a training-era year (observed: "18.09" -> "2022-09-18")
     # when calling get_energy_usage with a dateless user phrase. See
@@ -59,13 +72,9 @@ def system_prompt(control: bool) -> str:
         "- get_sensor_history: підсумок за ПЕРІОД (скільки кВт·год, як змінився лічильник, "
         "скільки разів і як довго було увімкнено, мін/макс температури) за дату, 'вчора', 'сьогодні' "
         "(якщо рік не вказано — бери поточний)\n"
-        + (
-            "- play_on_jellyfin_device: запустити фільм/серіал за назвою на Kodi\n"
-            "- control_jellyfin_playback: керувати тим, що зараз грає на Kodi — пауза, продовжити, "
-            "зупинити, наступна/попередня серія (НЕ передавай це як назву фільму)\n"
-            if control
-            else ""
-        )
+        "- qbittorrent_status: стан qBittorrent (віддано за сесію, ratio, місце, скільки з нульовою віддачею)\n"
+        "- qbittorrent_list: список торрентів за фільтром (ratio 0, качаються, проблеми)\n"
+        + "".join(line for name, line in _CONTROL_LINES.items() if name in offered)
         + "\n"
         "Використовуй інструмент, коли для відповіді потрібні конкретні дані — "
         "не вигадуй факти. Якщо інструмент не знайшов відповіді, так і скажи."
@@ -99,7 +108,7 @@ def list_models():
     return {"object": "list", "data": [{"id": "velesha", "object": "model", "owned_by": "velesha"}]}
 
 
-def run_agent(messages: list[dict], tools: list[dict]) -> str:
+def run_agent(messages: list[dict], tools: list[dict], user_text: str = "") -> str:
     for _ in range(MAX_TOOL_ITERATIONS):
         payload = {"messages": messages, "tools": tools, "tool_choice": "auto"}
         headers = {}
@@ -115,10 +124,15 @@ def run_agent(messages: list[dict], tools: list[dict]) -> str:
         # tool-call parser rejects (occasional garbled tokens from the
         # quantized 3B model, seen in testing) — one retry usually
         # succeeds since sampling isn't deterministic; never surface a 500.
-        for attempt in range(2):
-            resp = requests.post(CHAT_URL, json=payload, headers=headers, timeout=120)
-            if resp.status_code != 500:
-                break
+        try:
+            for attempt in range(2):
+                resp = requests.post(CHAT_URL, json=payload, headers=headers, timeout=180)
+                if resp.status_code != 500:
+                    break
+        except requests.exceptions.RequestException:
+            # slow CPU model + long tool schemas can exceed the timeout;
+            # HA should get an answer, not a 500 (ADR-0023)
+            return "Модель не встигла відповісти — спробуй ще раз."
         if resp.status_code == 500:
             return "Не вдалося сформувати відповідь — спробуй перефразувати питання."
         resp.raise_for_status()
@@ -132,7 +146,7 @@ def run_agent(messages: list[dict], tools: list[dict]) -> str:
         for tc in tool_calls:
             fn = tc["function"]
             print(f"TOOL {fn['name']} {fn['arguments']}", flush=True)  # audit trail
-            result = call_tool(fn["name"], fn["arguments"])
+            result = call_tool(fn["name"], fn["arguments"], user_text)
             messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
 
     return "Забагато кроків міркування — не вдалось отримати остаточну відповідь."
@@ -168,8 +182,8 @@ def chat_completions(req: ChatCompletionRequest):
 
     last_user = next((m.content or "" for m in reversed(req.messages) if m.role == "user"), "")
     offered = tools_for(last_user)
-    messages[0]["content"] = system_prompt(control=len(offered) > len(tools_for("")))
-    answer = run_agent(messages, offered)
+    messages[0]["content"] = system_prompt({t["function"]["name"] for t in offered})
+    answer = run_agent(messages, offered, last_user)
 
     if req.stream:
         return StreamingResponse(iter([sse_chunk(answer)]), media_type="text/event-stream")

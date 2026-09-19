@@ -50,6 +50,9 @@ One search surface across all sources, not per-source scripts.
 - [x] **Jellyfin playback control** (ADR-0022): pause/resume/stop/next/
       previous on Kodi. Hosted-model switch (`CHAT_API_KEY`) coded but
       untested until a key is supplied.
+- [x] **qBittorrent** (ADR-0023): status (session vs all-time upload, ratio-0
+      counts), filtered lists, add-with-category (code-gated; category must
+      come from the user's words and have a save path).
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar

@@ -18,6 +18,7 @@ import zoneinfo
 
 import ha_client
 import jellyfin_client
+import qbit_client
 from qdrant_client import QdrantClient
 from search_backend import COLLECTIONS, CANDIDATE_POOL, CHUNKS_PER_COLLECTION, MAX_CHUNK_CHARS, embed, qdrant_client
 
@@ -133,6 +134,40 @@ TOOLS = [
                     },
                 },
                 "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "qbittorrent_status",
+            "description": (
+                "Загальний стан qBittorrent: скільки віддано і завантажено за сесію та "
+                "за весь час, ratio, швидкості, вільне місце, скільки торрентів "
+                "роздається/качається/на паузі, скільки з нульовою віддачею."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "qbittorrent_list",
+            "description": "Список торрентів qBittorrent за фільтром (назва, ratio, віддано за сесію, категорія).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "string",
+                        "enum": ["zero_ratio", "zero_session", "downloading", "problems"],
+                        "description": (
+                            "zero_ratio — готові торренти, які за весь час ще нікому не віддавали (ratio 0); "
+                            "zero_session — готові, що не віддавали за цю сесію; "
+                            "downloading — що зараз качається; problems — помилки/пауза"
+                        ),
+                    },
+                },
+                "required": ["filter"],
             },
         },
     },
@@ -360,17 +395,47 @@ def tool_get_sensor_history(args: dict) -> str:
 # in testing: the 3B model called the play tool on "що є з Декстера?" and
 # "порадь серіал на вечір" (ADR-0021). Deliberately a code gate, not a
 # model decision.
-CONTROL_TOOLS = {"play_on_jellyfin_device", "control_jellyfin_playback"}
+CONTROL_TOOLS = {"play_on_jellyfin_device", "control_jellyfin_playback", "qbittorrent_add"}
 _COMMAND_RE = re.compile(
     r"(включ|увімкн|ввімкн|запуст|постав|відтвор|\bplay\b|пауз|продовж|зупин|стоп|наступн|попередн|далі|пропуст|\bnext\b|\bstop\b|\bpause\b)",
     re.IGNORECASE,
 )
 
 
+_TORRENT_LINK_RE = re.compile(r"(magnet:\?\S+|https?://\S+)", re.IGNORECASE)
+
+
+def _qbit_add_schema() -> dict:
+    cats = [n for n, c in qbit_client.categories().items() if c.get("savePath")]
+    return {
+        "type": "function",
+        "function": {
+            "name": "qbittorrent_add",
+            "description": (
+                "Додати торрент у qBittorrent за magnet/посиланням З ПОВІДОМЛЕННЯ користувача, "
+                "в категорію (від неї залежить папка). Категорію обирай ЛИШЕ якщо користувач "
+                "її назвав; якщо не назвав — не викликай, а запитай."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "magnet або URL .torrent, дослівно з повідомлення"},
+                    "category": {"type": "string", "enum": cats, "description": "Категорія (папка збереження)"},
+                },
+                "required": ["url", "category"],
+            },
+        },
+    }
+
+
 def tools_for(user_text: str) -> list[dict]:
-    if _COMMAND_RE.search(user_text or ""):
-        return TOOLS
-    return [t for t in TOOLS if t["function"]["name"] not in CONTROL_TOOLS]
+    text = user_text or ""
+    tools = TOOLS if _COMMAND_RE.search(text) else [t for t in TOOLS if t["function"]["name"] not in CONTROL_TOOLS]
+    # Adding a torrent needs an actual link in the user's own message —
+    # a model can't be allowed to invent one (ADR-0023).
+    if _TORRENT_LINK_RE.search(text):
+        tools = tools + [_qbit_add_schema()]
+    return tools
 
 
 # The only device this tool may ever start playback on — a state-changing
@@ -464,16 +529,94 @@ def tool_control_jellyfin_playback(args: dict) -> str:
     return f"Невідома дія '{action}'."
 
 
+def _gib(n: float) -> str:
+    return f"{n / 1024**3:.1f} ГБ" if n < 1024**4 else f"{n / 1024**4:.2f} ТБ"
+
+
+_DOWNLOADING = {"downloading", "stalledDL", "metaDL", "forcedDL", "queuedDL", "allocating", "checkingDL"}
+_PAUSED = {"pausedUP", "pausedDL", "stoppedUP", "stoppedDL"}
+_PROBLEMS = {"error", "missingFiles"} | _PAUSED
+
+
+def _done(t: dict) -> bool:
+    return t.get("progress", 0) >= 1
+
+
+def tool_qbittorrent_status(args: dict) -> str:
+    st = qbit_client.server_state()
+    ts = qbit_client.torrents()
+    done = [t for t in ts if _done(t)]
+    zero_ratio = sum(1 for t in done if t["ratio"] == 0)
+    zero_session = sum(1 for t in done if t.get("uploaded_session", 0) == 0)
+    return (
+        f"qBittorrent. Віддано за цю сесію: {_gib(st['up_info_data'])}. "
+        f"Віддано загалом (за весь час): {_gib(st['alltime_ul'])}. "
+        f"Завантажено за сесію: {_gib(st['dl_info_data'])}, загалом: {_gib(st['alltime_dl'])}. "
+        f"Загальний ratio: {st['global_ratio']}. "
+        f"Зараз віддача {st['up_info_speed'] / 1024**2:.1f} МБ/с, завантаження {st['dl_info_speed'] / 1024**2:.1f} МБ/с. "
+        f"Вільно на диску {_gib(st['free_space_on_disk'])}. "
+        f"Торрентів {len(ts)}: качається {sum(1 for t in ts if t['state'] in _DOWNLOADING)}, "
+        f"на паузі {sum(1 for t in ts if t['state'] in _PAUSED)}, "
+        f"з помилкою {sum(1 for t in ts if t['state'] in ('error', 'missingFiles'))}. "
+        f"Готових без жодної віддачі за весь час (ratio 0): {zero_ratio}; "
+        f"готових без віддачі за цю сесію: {zero_session}."
+    )
+
+
+def tool_qbittorrent_list(args: dict) -> str:
+    kind = args.get("filter", "")
+    ts = qbit_client.torrents()
+    if kind == "zero_ratio":
+        rows = [t for t in ts if _done(t) and t["ratio"] == 0]
+    elif kind == "zero_session":
+        rows = [t for t in ts if _done(t) and t.get("uploaded_session", 0) == 0]
+    elif kind == "downloading":
+        rows = [t for t in ts if t["state"] in _DOWNLOADING]
+    elif kind == "problems":
+        rows = [t for t in ts if t["state"] in _PROBLEMS]
+    else:
+        return f"Невідомий фільтр '{kind}'."
+    if not rows:
+        return "Таких торрентів немає."
+    lines = [
+        f"{t['name'][:70]} — ratio {t['ratio']:.2f}, віддано за сесію {_gib(t.get('uploaded_session', 0))}, "
+        f"віддано загалом {_gib(t.get('uploaded', 0))}, "
+        f"категорія {t['category'] or '—'}, {_gib(t['size'])}"
+        for t in rows[:10]
+    ]
+    extra = f"\n… і ще {len(rows) - 10}." if len(rows) > 10 else ""
+    return f"Всього {len(rows)}:\n" + "\n".join(lines) + extra
+
+
+def tool_qbittorrent_add(args: dict, user_text: str) -> str:
+    url, category = args.get("url", "").strip(), args.get("category", "")
+    if not url or url not in user_text:
+        return "Посилання має бути дослівно з повідомлення користувача."
+    cats = {n: c for n, c in qbit_client.categories().items() if c.get("savePath")}
+    if category not in cats:
+        return f"Невідома категорія '{category}'. Доступні: {', '.join(cats)}."
+    # The category must come from the user, not from the model's guess: a
+    # wrong one puts files in the wrong folder (ADR-0023).
+    if category.lower()[:5] not in user_text.lower():
+        return f"НЕ ДОДАНО. Користувач не назвав категорію. Запитай його: в яку категорію додати ({', '.join(cats)})?"
+    if qbit_client.add(url, category):
+        return f"Додано в qBittorrent, категорія «{category}» (папка {cats[category]['savePath']})."
+    return "qBittorrent відхилив торрент (можливо, уже додано або посилання некоректне)."
+
+
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
     "get_sensor_history": tool_get_sensor_history,
     "play_on_jellyfin_device": tool_play_on_jellyfin_device,
     "control_jellyfin_playback": tool_control_jellyfin_playback,
+    "qbittorrent_status": tool_qbittorrent_status,
+    "qbittorrent_list": tool_qbittorrent_list,
+    "qbittorrent_add": tool_qbittorrent_add,
 }
 
 
-def call_tool(name: str, arguments_json: str) -> str:
+def call_tool(name: str, arguments_json: str, user_text: str = "") -> str:
     try:
         args = json.loads(arguments_json)
     except json.JSONDecodeError:
@@ -482,6 +625,8 @@ def call_tool(name: str, arguments_json: str) -> str:
     if not handler:
         return f"Невідомий інструмент: {name}"
     try:
+        if name == "qbittorrent_add":
+            return handler(args, user_text)
         return handler(args)
     except Exception as e:
         return f"Помилка виконання {name}: {e}"
