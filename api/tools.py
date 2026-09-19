@@ -12,6 +12,7 @@ Three tools, chosen to close the exact gaps found in testing:
 import datetime
 import difflib
 import json
+import re
 
 import ha_client
 from qdrant_client import QdrantClient
@@ -21,7 +22,7 @@ from search_backend import COLLECTIONS, CANDIDATE_POOL, CHUNKS_PER_COLLECTION, M
 # noise for "what's the current state" questions — never a useful match.
 _NOISE_SUBSTRINGS = (
     "identifikuvati", "firmware", "child_lock", "power_on_state",
-    "backlight_mode", "battery",
+    "backlight_mode", "battery", "batareia",
 )
 
 TOOLS = [
@@ -54,15 +55,16 @@ TOOLS = [
         "function": {
             "name": "get_live_state",
             "description": (
-                "Поточний (живий, зараз) стан пристрою чи сенсора Home Assistant "
-                "за назвою — напр. 'чи двері відчинені', 'яка температура в спальні'."
+                "Поточне (живе, зараз) значення пристрою, сенсора чи лічильника Home "
+                "Assistant за назвою — напр. 'чи двері відчинені', 'яка температура "
+                "в спальні', 'скільки DNS-запитів заблоковано AdGuard'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "entity_name": {
                         "type": "string",
-                        "description": "Назва пристрою/сенсора українською, напр. 'вхідні двері', 'температура спальня'",
+                        "description": "Конкретна назва пристрою/сенсора, напр. 'вхідні двері', 'температура спальня', 'AdGuard Захист' (не лише 'AdGuard')",
                     }
                 },
                 "required": ["entity_name"],
@@ -91,7 +93,11 @@ def _score(hint: str, friendly_name: str) -> float:
     hint_l, name_l = hint.lower(), friendly_name.lower()
     if hint_l in name_l or name_l in hint_l:
         return 1.0
-    return difflib.SequenceMatcher(None, hint_l, name_l).ratio()
+    # Word overlap handles hints that reorder/drop words of a long name
+    # ("заблоковані DNS-запити AdGuard" vs "AdGuard Home Заблоковані DNS-запити").
+    tokens = re.findall(r"\w+", hint_l)
+    overlap = sum(1 for tok in tokens if tok in name_l) / len(tokens) if tokens else 0.0
+    return max(overlap * 0.95, difflib.SequenceMatcher(None, hint_l, name_l).ratio())
 
 
 # A bare device name ("телевізор") matches several entities equally well
@@ -104,7 +110,25 @@ _DOMAIN_PRIORITY = {
 }
 
 
-def resolve_entity(hint: str, unit: str | None = None) -> dict | None:
+# Raw "on"/"off" confused the 3B model (answered a switch question with
+# an unrelated counter); Ukrainian words in the tool output fix that.
+_STATE_UK = {"on": "увімкнено", "off": "вимкнено", "unavailable": "недоступно", "unknown": "невідомо"}
+
+
+_OPENING_CLASSES = {"door", "window", "opening", "garage_door", "garage"}
+
+
+def _state_uk(entity: dict) -> str:
+    state = entity.get("state")
+    device_class = entity.get("attributes", {}).get("device_class")
+    if entity["entity_id"].startswith("binary_sensor.") and device_class in _OPENING_CLASSES:
+        return {"on": "відчинено", "off": "закрито"}.get(state, state)
+    if entity["entity_id"].startswith("binary_sensor.") and device_class == "motion":
+        return {"on": "рух є", "off": "руху немає"}.get(state, state)
+    return _STATE_UK.get(state, state)
+
+
+def resolve_entities(hint: str, unit: str | None = None, limit: int = 1) -> list[dict]:
     states = ha_client.get_states()
     candidates = []
     for s in states:
@@ -118,11 +142,19 @@ def resolve_entity(hint: str, unit: str | None = None) -> dict | None:
             continue
         domain_priority = _DOMAIN_PRIORITY.get(entity_id.split(".", 1)[0], 1)
         candidates.append((_score(hint, name), domain_priority, s))
-    if not candidates:
-        return None
     candidates.sort(key=lambda c: (-c[0], c[1]))
-    best_score, _, best = candidates[0]
-    return best if best_score > 0.3 else None
+    if not candidates or candidates[0][0] <= 0.3:
+        return []
+    # Only near-ties with the best match: a clear winner is returned
+    # alone (a 3B model drifts into unrelated entities when handed five
+    # loosely-related lines), a genuine tie returns several to choose from.
+    best = candidates[0][0]
+    return [s for score, _, s in candidates[:limit] if score >= best - 0.1]
+
+
+def resolve_entity(hint: str, unit: str | None = None) -> dict | None:
+    found = resolve_entities(hint, unit, limit=1)
+    return found[0] if found else None
 
 
 def tool_search_knowledge(args: dict) -> str:
@@ -149,15 +181,21 @@ def tool_search_knowledge(args: dict) -> str:
 
 
 def tool_get_live_state(args: dict) -> str:
-    entity = resolve_entity(args.get("entity_name", ""))
-    if not entity:
-        return f"Не знайдено пристрій '{args.get('entity_name')}'."
-    attrs = entity.get("attributes", {})
-    unit = attrs.get("unit_of_measurement", "")
-    return (
-        f"{attrs.get('friendly_name')} ({entity['entity_id']}): "
-        f"{entity.get('state')} {unit}, останнє оновлення {entity.get('last_changed')}"
-    )
+    # Several entities often match one device name (AdGuard alone has ~14
+    # sensors/switches) and silently picking one gave wrong answers in
+    # testing — return the top few with their states and let the model
+    # choose the one the question is actually about. See ADR-0019.
+    hint = args.get("entity_name", "")
+    entities = resolve_entities(hint, limit=5)
+    if not entities:
+        return f"Не знайдено пристрій '{hint}'."
+    lines = []
+    for e in entities:
+        attrs = e.get("attributes", {})
+        unit = attrs.get("unit_of_measurement", "")
+        state = _state_uk(e)
+        lines.append(f"{attrs.get('friendly_name')}: {state} {unit}".rstrip())
+    return "\n".join(lines)
 
 
 def tool_get_energy_usage(args: dict) -> str:

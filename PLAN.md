@@ -81,6 +81,10 @@ Both sources re-indexed and verified working there.
   Qdrant payload filter on keyword, or a Tandoor API query by keyword,
   would give exact "only recipes I can make with X" filtering if that's
   ever needed instead of fuzzy relevance.
+- **Generic sensor history / delta tool** — `get_energy_usage` only handles
+  kWh counters; AdGuard-style counters (queries, blocked) work for *live*
+  values but "what happened yesterday" needs a general history tool over any
+  `sensor.*` (ADR-0019).
 - **Cross-conversation memory for `conversation.velesha`** — right now
   `api/` is stateless per request; within one HA conversation turn HA
   resends the full transcript so the model has short-term memory and can

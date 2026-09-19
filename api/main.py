@@ -46,8 +46,9 @@ def system_prompt() -> str:
         "У тебе є інструменти:\n"
         "- search_knowledge: рецепти (Tandoor), Jellyfin, та ІСТОРІЯ подій Home "
         "Assistant (коли щось вмикали/вимикали раніше — 'коли востаннє X')\n"
-        "- get_live_state: ТІЛЬКИ поточний (просто зараз) стан одного "
-        "пристрою/сенсора — не для питань 'коли' чи 'скільки за день'\n"
+        "- get_live_state: ПОТОЧНЕ значення будь-якого пристрою, сенсора чи лічильника "
+        "(відчинені двері, температура, скільки запитів заблокував AdGuard зараз) — "
+        "не для минулих подій 'коли востаннє' і не для підрахунку за конкретну дату\n"
         "- get_energy_usage: скільки електроенергії використав пристрій за конкретну дату "
         "(якщо рік не вказано користувачем — бери поточний рік)\n\n"
         "Використовуй інструмент, коли для відповіді потрібні конкретні дані — "
@@ -84,18 +85,24 @@ def list_models():
 
 def run_agent(messages: list[dict]) -> str:
     for _ in range(MAX_TOOL_ITERATIONS):
-        resp = requests.post(
-            CHAT_URL,
-            json={
-                "messages": messages,
-                "tools": TOOLS,
-                "tool_choice": "auto",
-                "max_tokens": 400,
-                "temperature": 0.2,
-                "repeat_penalty": 1.15,  # Qwen2.5-3B loops on longer answers otherwise (ADR-0018)
-            },
-            timeout=120,
-        )
+        payload = {
+            "messages": messages,
+            "tools": TOOLS,
+            "tool_choice": "auto",
+            "max_tokens": 400,
+            "temperature": 0.2,
+            "repeat_penalty": 1.15,  # Qwen2.5-3B loops on longer answers otherwise (ADR-0018)
+        }
+        # llama-server answers 500 when the model emits output its
+        # tool-call parser rejects (occasional garbled tokens from the
+        # quantized 3B model, seen in testing) — one retry usually
+        # succeeds since sampling isn't deterministic; never surface a 500.
+        for attempt in range(2):
+            resp = requests.post(CHAT_URL, json=payload, timeout=120)
+            if resp.status_code != 500:
+                break
+        if resp.status_code == 500:
+            return "Не вдалося сформувати відповідь — спробуй перефразувати питання."
         resp.raise_for_status()
         message = resp.json()["choices"][0]["message"]
 
