@@ -26,6 +26,8 @@ BLOCKED_TOOLS = {
 # the ha_history collection are the same class as get_sensor_history.
 _HISTORY_MARKER = "[ha_history]"
 DAILY_TOKEN_BUDGET = int(os.environ.get("DAILY_TOKEN_BUDGET", "500000"))
+# Web search is billed per call on top of tokens, so it has its own daily cap.
+DAILY_WEB_SEARCHES = int(os.environ.get("DAILY_WEB_SEARCHES", "15"))
 _USAGE_FILE = pathlib.Path(__file__).parent / "data" / "usage.json"
 
 _PATTERNS = [
@@ -114,7 +116,22 @@ def budget_left() -> int:
     return DAILY_TOKEN_BUDGET - _load().get(_today(), 0)
 
 
-def record_usage(tokens: int) -> None:
-    data = {_today(): _load().get(_today(), 0) + tokens}  # older days dropped
+def web_searches_left() -> int:
+    return DAILY_WEB_SEARCHES - _load().get(f"{_today()}:web", 0)
+
+
+def _bump(**counts: int) -> None:
+    data = {k: v for k, v in _load().items() if k.startswith(_today())}  # older days dropped
+    for name, n in counts.items():
+        key = _today() if name == "tokens" else f"{_today()}:{name}"
+        data[key] = data.get(key, 0) + n
     _USAGE_FILE.parent.mkdir(exist_ok=True)
     _USAGE_FILE.write_text(json.dumps(data))
+
+
+def record_usage(tokens: int) -> None:
+    _bump(tokens=tokens)
+
+
+def record_web_search(tokens: int) -> None:
+    _bump(tokens=tokens, web=1)

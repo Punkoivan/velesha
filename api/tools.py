@@ -12,10 +12,14 @@ Three tools, chosen to close the exact gaps found in testing:
 import datetime
 import difflib
 import json
+import os
 import re
 import time
 import zoneinfo
 
+import requests
+
+import guardrails
 import ha_client
 import jellyfin_client
 import qbit_client
@@ -533,6 +537,8 @@ def tools_for(user_text: str) -> list[dict]:
         tools = tools + [_qbit_add_schema()]
     if _TOLOKA_WORD_RE.search(text):
         tools = tools + [_toloka_search_schema()]
+    if _WEB_RE.search(text) and web_search_available():
+        tools = tools + [_web_search_schema()]
     # Adding from Toloka works only on a variant the user was just shown.
     if _fresh_search() and _ADD_VERB_RE.search(text):
         tools = tools + [_toloka_add_schema()]
@@ -783,6 +789,77 @@ def tool_toloka_add(args: dict, user_text: str) -> str:
     return "qBittorrent відхилив торрент (можливо, уже додано)."
 
 
+_WEB_RE = re.compile(
+    r"(інтернет|в мережі|онлайн|погугли|загугли|google|пошукай в|шукай в|свіж|нов(ий|і|ин|ішо|енький)|"
+    r"останн|актуальн|вийшл|вийде|imdb|рейтинг|2025|2026)", re.IGNORECASE)
+
+
+def _openai_key() -> str | None:
+    """Web search rides on the OpenAI Responses API — only when OpenAI is the working model."""
+    return os.environ.get("OPENAI_API_KEY") if os.environ.get("CHAT_PROVIDER") == "openai" else None
+
+
+def web_search_available() -> bool:
+    return bool(_openai_key()) and guardrails.web_searches_left() > 0 and guardrails.budget_left() > 0
+
+
+def _web_search_schema() -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": (
+                "Пошук в інтернеті: свіжі новини, фільми/серіали що вийшли нещодавно, рейтинги, "
+                "будь-що актуальне, чого немає в даних користувача. Викликай, коли користувач "
+                "просить пошукати в інтернеті або щось свіже. Запит формулюй по суті, без особистих даних."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "Що знайти, напр. 'нові фільми Тарантіно 2026'"}},
+                "required": ["query"],
+            },
+        },
+    }
+
+
+def tool_web_search(args: dict) -> str:
+    query = guardrails.redact(args.get("query", "").strip())  # only the query leaves; masked like everything else
+    if not query:
+        return "Не вказано, що шукати."
+    if not web_search_available():
+        return "Пошук в інтернеті зараз недоступний (немає ключа або вичерпано денний ліміт)."
+    today = datetime.datetime.now(_TZ).strftime("%Y-%m-%d")
+    body = {
+        "model": os.environ.get("CHAT_MODEL", "gpt-4.1-mini"),
+        "tools": [{"type": "web_search"}],
+        "instructions": (
+            f"Сьогодні {today}. Знайди в інтернеті відповідь на запит і відповідай українською: 3–6 коротких "
+            "пунктів з назвами та роками. Лише перевірені факти, без вигадок."
+        ),
+        "input": query,
+        "max_output_tokens": 700,
+    }
+    r = requests.post("https://api.openai.com/v1/responses", json=body,
+                      headers={"Authorization": f"Bearer {_openai_key()}"}, timeout=90)
+    if r.status_code >= 400:
+        return f"Пошук в інтернеті не вдався (HTTP {r.status_code})."
+    data = r.json()
+    guardrails.record_web_search(data.get("usage", {}).get("total_tokens", 0))
+    texts, sources = [], []
+    for item in data.get("output", []):
+        if item.get("type") != "message":
+            continue
+        for part in item.get("content", []):
+            if part.get("type") == "output_text":
+                texts.append(part.get("text", ""))
+                for a in part.get("annotations", []):
+                    if a.get("type") == "url_citation" and a["url"] not in sources:
+                        sources.append(a["url"].split("?")[0])
+    if not texts:
+        return "Пошук в інтернеті нічого не повернув."
+    return "\n".join(texts) + ("\n\nДжерела: " + ", ".join(sources[:3]) if sources else "")
+
+
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
@@ -794,6 +871,7 @@ DISPATCH = {
     "qbittorrent_add": tool_qbittorrent_add,
     "toloka_search": tool_toloka_search,
     "toloka_add": tool_toloka_add,
+    "web_search": tool_web_search,
 }
 
 

@@ -63,6 +63,9 @@ One search surface across all sources, not per-source scripts.
       local 3B 7/10, gpt-4.1-mini 30/30, free Gemini tool-choice 10/10 but
       rate-limited. Eval harness `api/eval_models.py`. Free-Gemini lane,
       agentgateway and a multi-step Tarantino→Toloka test still to do.
+- [x] **Web search** (ADR-0028): OpenAI Responses `web_search`, gated by
+      internet/freshness cues, 15/day cap, masked query. Gemini's Google
+      Search grounding tested: no free-tier quota (429).
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar
