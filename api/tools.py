@@ -662,7 +662,6 @@ def tool_qbittorrent_add(args: dict, user_text: str) -> str:
 
 
 _UNIT = {"KB": 1024, "MB": 1024**2, "GB": 1024**3, "TB": 1024**4}
-_DISK_MARGIN = 5 * 1024**3  # leave headroom, don't fill the disk to the last byte
 
 
 def _size_bytes(text: str) -> float | None:
@@ -672,9 +671,20 @@ def _size_bytes(text: str) -> float | None:
     return float(m.group(1).replace(",", ".")) * _UNIT[m.group(2).upper()]
 
 
-def _fits(size_text: str, free: float) -> bool:
+def _fits(size_text: str, available: float) -> bool:
     size = _size_bytes(size_text)
-    return size is None or size + _DISK_MARGIN <= free
+    return size is None or size <= available
+
+
+def _available_space() -> tuple[float, float]:
+    """(free on disk, free minus what running downloads still have to write).
+
+    qBittorrent's free space ignores torrents mid-download, so two adds in
+    a row could each "fit" and together overfill the disk.
+    """
+    free = qbit_client.server_state()["free_space_on_disk"]
+    pending = sum(t.get("amount_left", 0) for t in qbit_client.torrents() if t["state"] in _DOWNLOADING)
+    return free, max(free - pending, 0)
 
 
 def tool_toloka_search(args: dict) -> str:
@@ -685,16 +695,18 @@ def tool_toloka_search(args: dict) -> str:
     if not rows:
         return f"На Толоці нічого не знайдено за «{query}»."
     _last_search.update(at=time.time(), rows=rows)
-    free = qbit_client.server_state()["free_space_on_disk"]
+    free, available = _available_space()
     lines = [
         f"{i}. {r['title'][:95]} — {r['size']}, сідерів: {r['seeders']} ({r['forum']})"
-        + ("" if _fits(r["size"], free) else " — НЕ ВЛІЗЕ на диск")
+        + ("" if _fits(r["size"], available) else " — більше за наявне місце")
         for i, r in enumerate(rows, 1)
     ]
     cats = [n for n, c in qbit_client.categories().items() if c.get("savePath")]
     return (
         f"Знайдено на Толоці за «{query}» (за кількістю сідерів):\n" + "\n".join(lines)
-        + f"\n\nВільно на диску: {_gib(free)}. Щоб додати — скажи номер і розділ ({', '.join(cats)}), напр.: «додай 2 в {cats[0] if cats else 'фільми'}»."
+        + f"\n\nДоступно для нових завантажень: {_gib(available)}"
+        + (f" (вільно {_gib(free)}, ще докачується {_gib(free - available)})" if free != available else "")
+        + f". Щоб додати — скажи номер і розділ ({', '.join(cats)}), напр.: «додай 2 в {cats[0] if cats else 'фільми'}»."
     )
 
 
@@ -713,9 +725,14 @@ def tool_toloka_add(args: dict, user_text: str) -> str:
     if category.lower()[:5] not in user_text.lower():
         return f"НЕ ДОДАНО. Користувач не назвав розділ. Запитай його: в яку категорію додати ({', '.join(cats)})?"
     row = rows[number - 1]
-    free = qbit_client.server_state()["free_space_on_disk"]
-    if not _fits(row["size"], free):
-        return f"НЕ ДОДАНО. Не вистачає місця: роздача {row['size']}, вільно {_gib(free)} (потрібен запас {_gib(_DISK_MARGIN)})."
+    free, available = _available_space()
+    if not _fits(row["size"], available):
+        shortfall = _size_bytes(row["size"]) - available
+        return (
+            f"НЕ ДОДАНО. Роздача {row['size']}, а наявного місця {_gib(available)} "
+            f"(не вистачає {_gib(shortfall)}). Два варіанти: обрати менший варіант зі списку "
+            "або звільнити місце вручну і повторити."
+        )
     data = toloka_client.download_torrent(row["download_id"])
     if qbit_client.add_file(data, category):
         return f"Додано в qBittorrent: «{row['title'][:80]}» ({row['size']}), категорія «{category}» (папка {cats[category]['savePath']})."

@@ -51,9 +51,20 @@ Two tools, in a two-step flow:
   refused — nothing added); and a **disk-space check**.
 
 The disk check came out of the first real search: the top hit for
-«Декстер» was 196.56 GB with 37.7 GB free. Results that won't fit are
-marked "НЕ ВЛІЗЕ на диск" in the list and `toloka_add` refuses them
-("НЕ ДОДАНО. Не вистачає місця…"), keeping a 5 GB margin.
+«Декстер» was 196.56 GB with 37.7 GB free. **Refinement after user
+feedback**: a big release must never be *blocked or hidden* — it may be
+the only variant. The list shows everything, and only marks (does not
+hide) rows larger than the available space ("більше за наявне місце").
+The guard fires only at add time, only when the torrent is **larger than
+the available space** (no safety margin), and its message names the two
+ways out: pick a smaller variant from the list, or free space manually
+and retry ("НЕ ДОДАНО. Роздача 196.56 GB, а наявного місця 37.7 ГБ (не
+вистачає 158.9 ГБ)…"). "Available" is free disk space **minus what
+running downloads still have to write** (`amount_left` of downloading
+torrents): qBittorrent's own free-space figure ignores torrents
+mid-download, so two consecutive adds could each fit and together
+overfill the disk. (The first version used a 5 GB margin, which was
+stricter than intended and was removed.)
 
 ## Verification
 
@@ -65,7 +76,8 @@ correctly; «додай 2» without a category → refused (model had guessed
 «фільми»); «додай 2 в серіали» → torrent appeared with category
 `серіали`, `save_path /share/qBittorrent/series`, state `stoppedDL`,
 then deleted (count back to 99). The 196 GB variant was refused for
-space with the torrent count unchanged. Live HTTP search «Mandy 2018»
+space (shortfall stated) with the torrent count unchanged; boundary
+check 37 GB fits into 37.7 GB free, 38 GB does not. Live HTTP search «Mandy 2018»
 returned 7 variants.
 
 ## Alternatives considered
