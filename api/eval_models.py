@@ -30,6 +30,8 @@ elif BACKEND == "gemini":
     )
 else:
     os.environ.pop("CHAT_API_KEY", None)
+if os.environ.get("EVAL_REASONING"):
+    os.environ["CHAT_REASONING"] = os.environ["EVAL_REASONING"]
 os.environ["DAILY_TOKEN_BUDGET"] = "10000000"  # eval is explicit spend, not the daily cap
 
 import guardrails, ha_client, main, qbit_client, tools  # noqa: E402
@@ -99,7 +101,7 @@ QUESTIONS = [
     ("energy", "скільки 18.09 числа пралка використала електроенергії?", {"get_sensor_history"}, lambda a: energy is not None and energy in a.replace(",", ".")),
     ("tv", "коли востаннє було вімкнено телевізор?", {"get_sensor_history"}, lambda a: any(t in a for t in tv_times)),
     ("recipe", "порадь щось із куркою на вечерю", {"search_knowledge"}, lambda a: "курк" in a.lower()),
-    ("toloka", "знайди Mandy 2018 на толоці", {"toloka_search"}, lambda a: "Толоці" in a and "Mandy" in a or "Менді" in a),
+    ("toloka", "знайди Mandy 2018 на толоці", {"toloka_search", "jellyfin_find"}, lambda a: "Толоці" in a and "Mandy" in a or "Менді" in a),
     ("tarantino", "хочу подивитись якийсь фільм Тарантіно, запропонуй", None, lambda a: bool(re.search(TARANTINO, a, re.I)) and "Темпл" not in a and "Інтерстеллар" not in a),
     ("general", "хто зняв фільм Кримінальне чтиво і в якому році він вийшов?", None, lambda a: "тарантіно" in a.lower() and "1994" in a),
 ]

@@ -66,18 +66,20 @@ class PerMessageTools(BaseToolset):
         pass
 
 
-def _model(hosted: bool, chat_model: str, chat_key: str | None, hosted_base: str | None, local_base: str):
+def _model(hosted: bool, chat_model: str, chat_key: str | None, hosted_base: str | None, local_base: str,
+           reasoning_effort: str | None = None):
     local = dict(model="openai/local", api_base=local_base, api_key="none", max_tokens=400,
                  temperature=0.2, extra_body={"repeat_penalty": 1.15})  # Qwen2.5-3B loops otherwise (ADR-0018)
     if not hosted:
         return LiteLlm(**local)
+    extra = {"reasoning_effort": reasoning_effort} if reasoning_effort else {}
     return LiteLlm(model=f"openai/{chat_model}", api_key=chat_key, api_base=hosted_base,
-                   max_completion_tokens=600, fallbacks=[local])
+                   max_completion_tokens=600, fallbacks=[local], **extra)
 
 
 class Engine:
     def __init__(self, system_prompt, action_ok: tuple, *, chat_model: str, chat_key: str | None,
-                 hosted_base: str | None, local_base: str):
+                 hosted_base: str | None, local_base: str, reasoning_effort: str | None = None):
         self._system_prompt = system_prompt
         self._action_ok = action_ok
         self._hosted_ok = bool(chat_key and hosted_base)
@@ -87,7 +89,7 @@ class Engine:
         for hosted in (True, False):
             agent = Agent(
                 name=APP,
-                model=_model(hosted, chat_model, chat_key, hosted_base, local_base),
+                model=_model(hosted, chat_model, chat_key, hosted_base, local_base, reasoning_effort),
                 instruction=self._instruction,
                 tools=[PerMessageTools()],
                 before_model_callback=self._before_model(hosted),

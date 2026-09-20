@@ -47,6 +47,9 @@ LOCAL_URL = os.environ.get("LOCAL_CHAT_URL") or (
 ) or "http://localhost:8084/v1/chat/completions"
 HOSTED_URL = (os.environ.get("CHAT_URL") or "https://api.openai.com/v1/chat/completions") if CHAT_API_KEY else None
 MAX_TOOL_ITERATIONS = 4
+# Reasoning models (gpt-5.6-*) refuse function tools on chat/completions unless
+# reasoning_effort is set explicitly; "none" is also the fastest (ADR-0037).
+CHAT_REASONING = os.environ.get("CHAT_REASONING") or None
 
 
 _CONTROL_LINES = {
@@ -177,6 +180,8 @@ def _complete_hosted(messages: list[dict], tools: list[dict]) -> dict | None:
         "model": CHAT_MODEL, "messages": guardrails.redact_messages(messages),
         "tools": tools, "tool_choice": "auto", "max_completion_tokens": 600,
     }
+    if CHAT_REASONING:
+        payload["reasoning_effort"] = CHAT_REASONING
     try:
         resp = requests.post(
             HOSTED_URL, json=payload, headers={"Authorization": f"Bearer {CHAT_API_KEY}"}, timeout=120
@@ -305,7 +310,7 @@ def _adk_engine():
     if _engine is None:
         import adk_agent
         _engine = adk_agent.Engine(
-            system_prompt, _ACTION_OK, chat_model=CHAT_MODEL, chat_key=CHAT_API_KEY,
+            system_prompt, _ACTION_OK, chat_model=CHAT_MODEL, chat_key=CHAT_API_KEY, reasoning_effort=CHAT_REASONING,
             hosted_base=HOSTED_URL.removesuffix("/chat/completions") if HOSTED_URL else None,
             local_base=LOCAL_URL.removesuffix("/chat/completions"))
     return _engine
