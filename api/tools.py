@@ -215,6 +215,21 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "grocy_recipes",
+            "description": (
+                "Рецепти, заведені в Grocy, і чи вистачає для них інгредієнтів у запасах. "
+                "Для 'що я можу приготувати з наявного', 'чого не вистачає на X'. Це лише рецепти, "
+                "яким користувач додав інгредієнти в Grocy; для пошуку рецептів за змістом — search_knowledge."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "Частина назви рецепта; порожньо — усі"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "grocy_shopping_list",
             "description": "Поточний список покупок у Grocy.",
             "parameters": {"type": "object", "properties": {}},
@@ -484,7 +499,8 @@ def tool_get_sensor_history(args: dict) -> str:
 # "порадь серіал на вечір" (ADR-0021). Deliberately a code gate, not a
 # model decision.
 CONTROL_TOOLS = {"play_on_jellyfin_device", "control_jellyfin_playback", "qbittorrent_add", "toloka_add",
-                 "grocy_consume", "grocy_add_stock", "grocy_shopping_add"}
+                 "grocy_consume", "grocy_add_stock", "grocy_shopping_add",
+                 "grocy_recipe_consume", "grocy_recipe_shopping"}
 
 # Answered verbatim, without a second model call (ADR-0024).
 PASSTHROUGH_TOOLS = {"toloka_search"}
@@ -532,6 +548,8 @@ _GROCY_CONSUME_RE = re.compile(r"(використав|використала|в
 _GROCY_ADD_RE = re.compile(r"(купив|купила|докупив|докупила|поклав|поклала|поповни|прибав|додай до запас|додати до запас)", re.IGNORECASE)
 _GROCY_SHOP_RE = re.compile(r"(список покупок|списку покупок|треба купити|потрібно купити|купити)", re.IGNORECASE)
 
+_GROCY_COOK_RE = re.compile(r"(приготував|приготувала|зварив|зварила|спік|спекла|засмажив|засмажила)", re.IGNORECASE)
+_GROCY_RSHOP_RE = re.compile(r"(список покупок|списку покупок|додай.*не вистача|не вистача.*додай)", re.IGNORECASE)
 _SEARCH_TTL = 30 * 60
 _last_search: dict = {"at": 0.0, "rows": []}
 # A variant the user already picked whose category is still missing. The agent
@@ -610,6 +628,27 @@ def _grocy_action_schema(name: str, desc: str) -> dict:
     }
 
 
+def _grocy_recipe_schema(name: str, desc: str) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": desc,
+            "parameters": {
+                "type": "object",
+                "properties": {"recipe": {"type": "string", "description": "Назва рецепта з Grocy"}},
+                "required": ["recipe"],
+            },
+        },
+    }
+
+
+_GROCY_RECIPE_SCHEMAS = {
+    "grocy_recipe_consume": ("Позначити, що рецепт з Grocy приготовано: списати його інгредієнти зі запасів. Лише коли користувач каже, що приготував/зварив.", _GROCY_COOK_RE),
+    "grocy_recipe_shopping": ("Додати до списку покупок Grocy те, чого не вистачає для рецепта. Лише за проханням додати нестачу в список покупок.", _GROCY_RSHOP_RE),
+}
+
+
 _GROCY_SCHEMAS = {
     "grocy_consume": ("Списати зі запасів використане/витрачене (Grocy). Лише коли користувач каже, що використав/витратив/з'їв.", _GROCY_CONSUME_RE),
     "grocy_add_stock": ("Додати до запасів куплене/поповнене (Grocy). Лише коли користувач каже, що купив/докупив/поклав.", _GROCY_ADD_RE),
@@ -630,6 +669,9 @@ def tools_for(user_text: str) -> list[dict]:
     for name, (desc, gate) in _GROCY_SCHEMAS.items():
         if gate.search(text):  # state-changing: only on an explicit phrase (ADR-0032)
             tools = tools + [_grocy_action_schema(name, desc)]
+    for name, (desc, gate) in _GROCY_RECIPE_SCHEMAS.items():
+        if gate.search(text):
+            tools = tools + [_grocy_recipe_schema(name, desc)]
     if _WEB_RE.search(text) and web_search_available():
         tools = tools + [_web_search_schema()]
     # Adding from Toloka works only on a variant the user was just shown.
@@ -1070,6 +1112,63 @@ def tool_grocy_shopping_add(args: dict) -> str:
     return _grocy_change("shop", args)
 
 
+def _grocy_recipe_match(query: str) -> list[dict]:
+    q = query.lower().strip()
+    recipes = grocy_client.objects("recipes")
+    exact = [r for r in recipes if r["name"].lower() == q]
+    if exact:
+        return exact
+    words = q.split()
+    return [r for r in recipes if all(any(w.startswith(qt) or qt.startswith(w[:max(4, len(qt) - 2)]) for w in r["name"].lower().split()) for qt in words)] if words else recipes
+
+
+def tool_grocy_recipes(args: dict) -> str:
+    query = (args.get("query") or "").strip()
+    recipes = [r for r in _grocy_recipe_match(query) if r.get("type") == "normal"]
+    if not recipes:
+        return ("У Grocy немає рецептів" + (f" за «{query}»" if query else "")
+                + ". Рецепти зі структурованими інгредієнтами треба спершу завести в Grocy.")
+    lines = []
+    for r in recipes[:15]:
+        f = grocy_client.recipe_fulfillment(r["id"])
+        if f.get("need_fulfilled"):
+            lines.append(f"{r['name']}: усе є в запасах")
+        else:
+            lines.append(f"{r['name']}: не вистачає {f.get('missing_products_count', '?')} інгр.")
+    return "\n".join(lines)
+
+
+def _grocy_recipe_one(name: str):
+    found = [r for r in _grocy_recipe_match(name) if r.get("type") == "normal"]
+    if not found:
+        return None, f"НЕ ЗМІНЕНО. У Grocy немає рецепта «{name}»."
+    if len(found) > 1 and found[0]["name"].lower() != name.lower().strip():
+        return None, "НЕ ЗМІНЕНО. Уточни, який саме рецепт: " + "; ".join(r["name"] for r in found[:5]) + "."
+    return found[0], None
+
+
+def tool_grocy_recipe_consume(args: dict) -> str:
+    r, err = _grocy_recipe_one(args.get("recipe", ""))
+    if err:
+        return err
+    f = grocy_client.recipe_fulfillment(r["id"])
+    if not f.get("need_fulfilled"):
+        return f"НЕ ЗМІНЕНО. Для «{r['name']}» у запасах не вистачає інгредієнтів ({f.get('missing_products_count', '?')}), списувати нема з чого."
+    grocy_client.recipe_consume(r["id"])
+    return f"Списано інгредієнти рецепта «{r['name']}» зі запасів."
+
+
+def tool_grocy_recipe_shopping(args: dict) -> str:
+    r, err = _grocy_recipe_one(args.get("recipe", ""))
+    if err:
+        return err
+    f = grocy_client.recipe_fulfillment(r["id"])
+    if f.get("need_fulfilled"):
+        return f"НЕ ЗМІНЕНО. Для «{r['name']}» усе вже є в запасах."
+    grocy_client.recipe_shop_missing(r["id"])
+    return f"Додано до списку покупок нестачу для рецепта «{r['name']}» ({f.get('missing_products_count', '?')} інгр.)."
+
+
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
@@ -1083,6 +1182,9 @@ DISPATCH = {
     "jellyfin_find": tool_jellyfin_find,
     "grocy_stock": tool_grocy_stock,
     "grocy_shopping_list": tool_grocy_shopping_list,
+    "grocy_recipes": tool_grocy_recipes,
+    "grocy_recipe_consume": tool_grocy_recipe_consume,
+    "grocy_recipe_shopping": tool_grocy_recipe_shopping,
     "grocy_consume": tool_grocy_consume,
     "grocy_add_stock": tool_grocy_add_stock,
     "grocy_shopping_add": tool_grocy_shopping_add,

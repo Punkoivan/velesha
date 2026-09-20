@@ -64,3 +64,15 @@ def shopping_add(product_id: int, amount: float, list_id: int = 1) -> None:
 
 def shopping_list() -> list[dict]:
     return _req("GET", "/objects/shopping_list")
+
+
+def recipe_fulfillment(recipe_id: int) -> dict:
+    return _req("GET", f"/recipes/{recipe_id}/fulfillment")
+
+
+def recipe_shop_missing(recipe_id: int) -> None:
+    _req("POST", f"/recipes/{recipe_id}/add-not-fulfilled-products-to-shoppinglist", json={})
+
+
+def recipe_consume(recipe_id: int) -> None:
+    _req("POST", f"/recipes/{recipe_id}/consume", json={})
