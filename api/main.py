@@ -275,6 +275,24 @@ def sse_chunk(content: str) -> bytes:
     return body.encode()
 
 
+# Short-term memory (ADR-0034): HA starts a fresh conversation after a few idle
+# minutes, so a short reply ("Ранч") arrives with no history. Keep the last few
+# exchanges and replay them when a request comes in cold and recent.
+MEMORY_TTL = 60 * 60
+MEMORY_TURNS = 3
+_memory: list[dict] = []
+
+
+def _recall(now: float) -> list[dict]:
+    fresh = [t for t in _memory if now - t["at"] < MEMORY_TTL][-MEMORY_TURNS:]
+    return [{"role": role, "content": t[role]} for t in fresh for role in ("user", "assistant")]
+
+
+def _remember(user: str, assistant: str, now: float) -> None:
+    _memory.append({"at": now, "user": user[:500], "assistant": assistant[:800]})
+    del _memory[:-10]
+
+
 @app.post("/v1/chat/completions")
 def chat_completions(req: ChatCompletionRequest):
     if os.environ.get("LOG_CALLER_PROMPT"):  # diagnostic: does HA mark voice vs typed input?
@@ -289,6 +307,9 @@ def chat_completions(req: ChatCompletionRequest):
     messages += [{"role": m.role, "content": m.content or ""} for m in req.messages if m.role != "system"]
 
     last_user = next((m.content or "" for m in reversed(req.messages) if m.role == "user"), "")
+    now = time.time()
+    if len(messages) == 2:  # system + one user message: HA gave no history
+        messages[1:1] = _recall(now)
     offered = tools_for(last_user)
     messages[0]["content"] = system_prompt({t["function"]["name"] for t in offered})
     state = {"acted": False}
@@ -298,6 +319,7 @@ def chat_completions(req: ChatCompletionRequest):
     if HOSTED_URL and guardrails.budget_left() <= 0:
         answer = "(Денний ліміт токенів вичерпано — відповідає слабша локальна модель.) " + answer
 
+    _remember(last_user, answer, now)
     if req.stream:
         return StreamingResponse(iter([sse_chunk(answer)]), media_type="text/event-stream")
 

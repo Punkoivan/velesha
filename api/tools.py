@@ -685,7 +685,7 @@ _GROCY_IMPORT_SCHEMA = {
         "parameters": {
             "type": "object",
             "properties": {
-                "recipe": {"type": "string", "description": "Назва рецепта в Tandoor"},
+                "recipe": {"type": "string", "description": "Рівно те, що сказав користувач (напр. «соус», «Ранч»). НЕ вибирай рецепт сам: якщо назва неоднозначна, передай як є, інструмент перепитає."},
                 "confirm": {"type": "boolean", "description": "true — записати підтверджену чернетку"},
             },
             "required": ["recipe"],
@@ -1336,12 +1336,19 @@ def _draft_text(d: dict) -> str:
     return "\n".join(out)
 
 
+def _grocy_title_match(query: str, title: str) -> bool:
+    q, tl = query.lower().split(), title.lower().split()
+    return all(any(w.startswith(qt) for w in tl) for qt in q)
+
+
 def tool_grocy_recipe_import(args: dict, user_text: str = "") -> str:
     name = (args.get("recipe") or "").strip()
-    if args.get("confirm"):
-        d = _pending_recipe["draft"]
-        if not (_fresh_recipe_draft() and d and _CONFIRM_RE.search(user_text)):
-            return "НЕ ЗМІНЕНО. Немає підтвердженої чернетки: спершу покажу чернетку, а ви підтвердите."
+    d = _pending_recipe["draft"]
+    # A write needs a fresh draft for this very recipe AND a real "так" from
+    # the user; anything else (a new dish name sent with confirm=true) is just
+    # a request for a draft, never a refusal or a silent write.
+    if (args.get("confirm") and _fresh_recipe_draft() and d and _CONFIRM_RE.search(user_text)
+            and (not name or _grocy_title_match(name, d["title"]))):
         return _write_draft(d)
     _import_ctx["at"] = time.time()
     rec, err = _tandoor_recipe(name)
