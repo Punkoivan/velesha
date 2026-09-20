@@ -57,6 +57,7 @@ _CONTROL_LINES = {
     "grocy_recipe_consume": "- grocy_recipe_consume: рецепт з Grocy приготовано — списати інгредієнти\n",
     "grocy_recipe_shopping": "- grocy_recipe_shopping: додати до списку покупок нестачу для рецепта з Grocy\n",
     "grocy_recipe_import": "- grocy_recipe_import: перенести рецепт з Tandoor у Grocy (чернетка → підтвердження користувача → confirm=true)\n",
+    "grocy_recipes_not_imported": "- grocy_recipes_not_imported: точний перелік рецептів Tandoor, яких ще немає в Grocy\n",
     "grocy_add_stock": "- grocy_add_stock: додати куплене до запасів\n",
     "grocy_shopping_add": "- grocy_shopping_add: додати продукт до списку покупок\n",
     "web_search": "- web_search: пошук в інтернеті (свіже, новини, нові фільми) — коли користувач просить пошукати в інтернеті\n",

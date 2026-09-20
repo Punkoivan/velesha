@@ -555,6 +555,17 @@ _CONFIRM_RE = re.compile(r"^\W*(так|ок|окей|добре|давай|пі�
 _pending_recipe: dict = {"draft": None, "at": 0.0}
 
 
+# HA drops a conversation after a few idle minutes and the next short reply
+# ("Ранч") then arrives with no history; remember that a Tandoor→Grocy import
+# is in progress so that reply is routed to it, not to jellyfin_find (ADR-0033).
+_IMPORT_CTX_TTL = 60 * 60
+_import_ctx: dict = {"at": 0.0}
+
+
+def _fresh_import_ctx() -> bool:
+    return time.time() - _import_ctx["at"] < _IMPORT_CTX_TTL
+
+
 def _fresh_recipe_draft() -> bool:
     return _pending_recipe["draft"] is not None and time.time() - _pending_recipe["at"] < _PENDING_TTL
 
@@ -651,6 +662,18 @@ def _grocy_recipe_schema(name: str, desc: str) -> dict:
     }
 
 
+_GROCY_MISSING_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "grocy_recipes_not_imported",
+        "description": (
+            "Які рецепти з Tandoor ще НЕ додані до Grocy (точний перелік, рахується кодом; "
+            "не використовуй для цього search_knowledge)."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
 _GROCY_IMPORT_SCHEMA = {
     "type": "function",
     "function": {
@@ -697,8 +720,12 @@ def tools_for(user_text: str) -> list[dict]:
     for name, (desc, gate) in _GROCY_SCHEMAS.items():
         if gate.search(text):  # state-changing: only on an explicit phrase (ADR-0032)
             tools = tools + [_grocy_action_schema(name, desc)]
-    if _GROCY_IMPORT_RE.search(text) or (_fresh_recipe_draft() and _CONFIRM_RE.search(text)):
-        tools = tools + [_GROCY_IMPORT_SCHEMA]
+    short_reply = len(text.split()) <= 4
+    in_import = _fresh_import_ctx() and short_reply
+    if _GROCY_IMPORT_RE.search(text) or in_import or (_fresh_recipe_draft() and _CONFIRM_RE.search(text)):
+        tools = tools + [_GROCY_IMPORT_SCHEMA, _GROCY_MISSING_SCHEMA]
+    if in_import:  # a bare dish name mid-import is not a film title or a torrent
+        tools = [x for x in tools if x["function"]["name"] not in ("jellyfin_find", "toloka_search")]
     for name, (desc, gate) in _GROCY_RECIPE_SCHEMAS.items():
         if gate.search(text):
             tools = tools + [_grocy_recipe_schema(name, desc)]
@@ -1148,6 +1175,20 @@ def tool_grocy_shopping_add(args: dict) -> str:
     return _grocy_change("shop", args)
 
 
+def _tandoor_titles() -> list[str]:
+    pts, _ = qdrant_client().scroll("tandoor_recipes", limit=500, with_payload=True)
+    return sorted(p.payload["title"] for p in pts)
+
+
+def tool_grocy_recipes_not_imported(args: dict) -> str:
+    have = {r["name"].lower() for r in grocy_client.objects("recipes")}
+    todo = [t for t in _tandoor_titles() if t.lower() not in have]
+    _import_ctx["at"] = time.time()
+    if not todo:
+        return "Усі рецепти з Tandoor уже є в Grocy."
+    return f"Ще не в Grocy ({len(todo)} із {len(todo) + len(have)}): " + "; ".join(todo) + "."
+
+
 def _grocy_recipe_match(query: str) -> list[dict]:
     q = query.lower().strip()
     recipes = grocy_client.objects("recipes")
@@ -1302,6 +1343,7 @@ def tool_grocy_recipe_import(args: dict, user_text: str = "") -> str:
         if not (_fresh_recipe_draft() and d and _CONFIRM_RE.search(user_text)):
             return "НЕ ЗМІНЕНО. Немає підтвердженої чернетки: спершу покажу чернетку, а ви підтвердите."
         return _write_draft(d)
+    _import_ctx["at"] = time.time()
     rec, err = _tandoor_recipe(name)
     if err:
         return "НЕ ЗМІНЕНО. " + err
@@ -1355,6 +1397,7 @@ DISPATCH = {
     "grocy_shopping_list": tool_grocy_shopping_list,
     "grocy_recipes": tool_grocy_recipes,
     "grocy_recipe_import": tool_grocy_recipe_import,
+    "grocy_recipes_not_imported": tool_grocy_recipes_not_imported,
     "grocy_recipe_consume": tool_grocy_recipe_consume,
     "grocy_recipe_shopping": tool_grocy_recipe_shopping,
     "grocy_consume": tool_grocy_consume,
