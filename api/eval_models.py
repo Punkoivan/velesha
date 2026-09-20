@@ -35,6 +35,8 @@ if os.environ.get("EVAL_REASONING"):
 os.environ["DAILY_TOKEN_BUDGET"] = "10000000"  # eval is explicit spend, not the daily cap
 
 import guardrails, ha_client, main, qbit_client, tools  # noqa: E402
+import pathlib, tempfile  # noqa: E402
+guardrails._USAGE_FILE = pathlib.Path(tempfile.mkdtemp()) / "usage.json"  # eval spend must not eat the daily budget
 
 TZ = zoneinfo.ZoneInfo("Europe/Kyiv")
 CALLS, TOKENS = [], [0]
