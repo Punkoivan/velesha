@@ -74,6 +74,8 @@ One search surface across all sources, not per-source scripts.
       while only the category is missing; bare category replies work.
 - [x] **Grocy як домашні запаси** (ADR-0032): міграція з Obsidian, читання +
       списання/додавання/список покупок (дії за явною фразою).
+- [x] **Пам'ять розмови** (ADR-0034) і **кілька користувачів** (ADR-0035):
+      ключ API = особа, адмін-інструменти, окремі нотатки й пам'ять.
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar

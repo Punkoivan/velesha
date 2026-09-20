@@ -25,11 +25,12 @@ import time
 import uuid
 
 import requests
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Header
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 import guardrails
+import users
 from tools import CONTROL_TOOLS, PASSTHROUGH_TOOLS, call_tool, tools_for
 
 # Local llama-server (always available as the private/fallback lane).
@@ -58,6 +59,7 @@ _CONTROL_LINES = {
     "grocy_recipe_shopping": "- grocy_recipe_shopping: додати до списку покупок нестачу для рецепта з Grocy\n",
     "grocy_recipe_import": "- grocy_recipe_import: перенести рецепт з Tandoor у Grocy (чернетка → підтвердження користувача → confirm=true)\n",
     "grocy_recipes_not_imported": "- grocy_recipes_not_imported: точний перелік рецептів Tandoor, яких ще немає в Grocy\n",
+    "note_add": "- note_add: записати особисту нотатку користувача; notes_search — знайти його нотатки (чужих не бачиш)\n",
     "grocy_add_stock": "- grocy_add_stock: додати куплене до запасів\n",
     "grocy_shopping_add": "- grocy_shopping_add: додати продукт до списку покупок\n",
     "web_search": "- web_search: пошук в інтернеті (свіже, новини, нові фільми) — коли користувач просить пошукати в інтернеті\n",
@@ -191,7 +193,7 @@ def _complete_hosted(messages: list[dict], tools: list[dict]) -> dict | None:
 
 # Every action tool starts its success message with one of these; anything else
 # ("НЕ ДОДАНО …", "Не …", errors) means nothing was changed.
-_ACTION_OK = ("Запущено", "Додано", "Поставлено на паузу", "Продовжено", "Зупинено", "Списано", "Створено")
+_ACTION_OK = ("Запущено", "Додано", "Поставлено на паузу", "Продовжено", "Зупинено", "Списано", "Створено", "Записано")
 _CLAIM_RE = re.compile(
     r"\b(додав|додала|додано|запустив|запустила|запущено|поставив на паузу|поставлено на паузу|"
     r"продовжив|продовжено|зупинив|зупинено|списав|списала|списано)\b", re.IGNORECASE)
@@ -280,21 +282,26 @@ def sse_chunk(content: str) -> bytes:
 # exchanges and replay them when a request comes in cold and recent.
 MEMORY_TTL = 60 * 60
 MEMORY_TURNS = 3
-_memory: list[dict] = []
+_memory: dict[str, list[dict]] = {}
 
 
 def _recall(now: float) -> list[dict]:
-    fresh = [t for t in _memory if now - t["at"] < MEMORY_TTL][-MEMORY_TURNS:]
+    fresh = [t for t in _memory.get(users.current(), []) if now - t["at"] < MEMORY_TTL][-MEMORY_TURNS:]
     return [{"role": role, "content": t[role]} for t in fresh for role in ("user", "assistant")]
 
 
 def _remember(user: str, assistant: str, now: float) -> None:
-    _memory.append({"at": now, "user": user[:500], "assistant": assistant[:800]})
-    del _memory[:-10]
+    turns = _memory.setdefault(users.current(), [])
+    turns.append({"at": now, "user": user[:500], "assistant": assistant[:800]})
+    del turns[:-10]
 
 
 @app.post("/v1/chat/completions")
-def chat_completions(req: ChatCompletionRequest):
+def chat_completions(req: ChatCompletionRequest, authorization: str | None = Header(None)):
+    caller = users.resolve(authorization)
+    if caller is None:
+        return JSONResponse({"error": {"message": "Unknown API key", "type": "invalid_request_error"}}, status_code=401)
+    users.set_current(caller)
     if os.environ.get("LOG_CALLER_PROMPT"):  # diagnostic: does HA mark voice vs typed input?
         with open("/tmp/velesha-caller.log", "a") as f:
             f.write(json.dumps({

@@ -50,6 +50,13 @@ usable via `/api/conversation/process` or HA's Assist pipeline.
   output, Qwen2.5-3B occasionally misreads which line in a list is the
   answer (see ADR-0018's Consequences) — not common, but not zero.
 
+## Кілька користувачів
+
+`VELESHA_USERS="ключ1:ivan,ключ2:olha"` і `VELESHA_ADMINS="ivan"` в
+`api/secrets.enc.env` (ADR-0035). У HA — окремий запис `llama_cpp` на людину з
+її ключем в полі API key. Без `VELESHA_USERS` працює як раніше (один
+користувач). Торренти/Толока — лише адміну; нотатки, пам'ять розмов окремі.
+
 ## Grocy
 
 Домашні запаси (їжа, побутова хімія) — у Grocy (ADR-0032): `GROCY_URL`,

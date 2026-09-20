@@ -13,6 +13,7 @@ import datetime
 import difflib
 import json
 import os
+import pathlib
 import re
 import time
 import zoneinfo
@@ -25,6 +26,7 @@ import ha_client
 import jellyfin_client
 import qbit_client
 import toloka_client
+import users
 from qdrant_client import QdrantClient
 from search_backend import COLLECTIONS, CANDIDATE_POOL, CHUNKS_PER_COLLECTION, MAX_CHUNK_CHARS, embed, qdrant_client
 
@@ -500,9 +502,11 @@ def tool_get_sensor_history(args: dict) -> str:
 # model decision.
 CONTROL_TOOLS = {"play_on_jellyfin_device", "control_jellyfin_playback", "qbittorrent_add", "toloka_add",
                  "grocy_consume", "grocy_add_stock", "grocy_shopping_add",
-                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import"}
+                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "note_add"}
 
 # Answered verbatim, without a second model call (ADR-0024).
+# Administration stays with the admin (ADR-0035); everything else is shared.
+ADMIN_TOOLS = {"qbittorrent_status", "qbittorrent_list", "qbittorrent_add", "toloka_search", "toloka_add"}
 PASSTHROUGH_TOOLS = {"toloka_search", "grocy_recipe_import"}
 _COMMAND_RE = re.compile(
     r"(включ|увімкн|ввімкн|запуст|постав|відтвор|\bplay\b|пауз|продовж|зупин|стоп|наступн|попередн|далі|пропуст|\bnext\b|\bstop\b|\bpause\b)",
@@ -552,22 +556,25 @@ _GROCY_COOK_RE = re.compile(r"(приготував|приготувала|зв�
 _GROCY_RSHOP_RE = re.compile(r"(список покупок|списку покупок|додай.*не вистача|не вистача.*додай)", re.IGNORECASE)
 _GROCY_IMPORT_RE = re.compile(r"рецепт.*(grocy|гроч|грок)|(grocy|гроч|грок).*рецепт", re.IGNORECASE)
 _CONFIRM_RE = re.compile(r"^\W*(так|ок|окей|добре|давай|підтверджую|записуй|роби|створюй|додавай)\b", re.IGNORECASE)
-_pending_recipe: dict = {"draft": None, "at": 0.0}
+_recipe_state: dict[str, dict] = {}
+
+
+def _rs() -> dict:
+    return _recipe_state.setdefault(users.current(), {"draft": None, "at": 0.0, "ctx_at": 0.0})
 
 
 # HA drops a conversation after a few idle minutes and the next short reply
 # ("Ранч") then arrives with no history; remember that a Tandoor→Grocy import
 # is in progress so that reply is routed to it, not to jellyfin_find (ADR-0033).
 _IMPORT_CTX_TTL = 60 * 60
-_import_ctx: dict = {"at": 0.0}
 
 
 def _fresh_import_ctx() -> bool:
-    return time.time() - _import_ctx["at"] < _IMPORT_CTX_TTL
+    return time.time() - _rs()["ctx_at"] < _IMPORT_CTX_TTL
 
 
 def _fresh_recipe_draft() -> bool:
-    return _pending_recipe["draft"] is not None and time.time() - _pending_recipe["at"] < _PENDING_TTL
+    return _rs()["draft"] is not None and time.time() - _rs()["at"] < _PENDING_TTL
 
 _SEARCH_TTL = 30 * 60
 _last_search: dict = {"at": 0.0, "rows": []}
@@ -734,6 +741,9 @@ def tools_for(user_text: str) -> list[dict]:
     # Adding from Toloka works only on a variant the user was just shown.
     if _fresh_search() and (_ADD_VERB_RE.search(text) or _fresh_pending() or _names_a_category(text)):
         tools = tools + [_toloka_add_schema()]
+    tools = tools + _note_schemas(text)
+    if not users.is_admin():
+        tools = [x for x in tools if x["function"]["name"] not in ADMIN_TOOLS]
     return tools
 
 
@@ -1183,7 +1193,7 @@ def _tandoor_titles() -> list[str]:
 def tool_grocy_recipes_not_imported(args: dict) -> str:
     have = {r["name"].lower() for r in grocy_client.objects("recipes")}
     todo = [t for t in _tandoor_titles() if t.lower() not in have]
-    _import_ctx["at"] = time.time()
+    _rs()["ctx_at"] = time.time()
     if not todo:
         return "Усі рецепти з Tandoor уже є в Grocy."
     return f"Ще не в Grocy ({len(todo)} із {len(todo) + len(have)}): " + "; ".join(todo) + "."
@@ -1343,14 +1353,14 @@ def _grocy_title_match(query: str, title: str) -> bool:
 
 def tool_grocy_recipe_import(args: dict, user_text: str = "") -> str:
     name = (args.get("recipe") or "").strip()
-    d = _pending_recipe["draft"]
+    d = _rs()["draft"]
     # A write needs a fresh draft for this very recipe AND a real "так" from
     # the user; anything else (a new dish name sent with confirm=true) is just
     # a request for a draft, never a refusal or a silent write.
     if (args.get("confirm") and _fresh_recipe_draft() and d and _CONFIRM_RE.search(user_text)
             and (not name or _grocy_title_match(name, d["title"]))):
         return _write_draft(d)
-    _import_ctx["at"] = time.time()
+    _rs()["ctx_at"] = time.time()
     rec, err = _tandoor_recipe(name)
     if err:
         return "НЕ ЗМІНЕНО. " + err
@@ -1359,7 +1369,7 @@ def tool_grocy_recipe_import(args: dict, user_text: str = "") -> str:
     d = _build_draft(rec["title"], rec["text"])
     if not any(l["amount"] for l in d["lines"]):
         return f"НЕ ЗМІНЕНО. У тексті «{rec['title']}» немає інгредієнтів з кількостями — переносити нічого."
-    _pending_recipe.update(draft=d, at=time.time())
+    _rs().update(draft=d, at=time.time())
     return _draft_text(d)
 
 
@@ -1385,8 +1395,55 @@ def _write_draft(d: dict) -> str:
             grocy_client.create("recipes_pos", {"recipe_id": rid, "product_id": l["product"]["id"],
                                                 "amount": l["qty"], "qu_id": l["product"]["qu_id_stock"]})
             written += 1
-    _pending_recipe.update(draft=None)
+    _rs().update(draft=None)
     return f"Створено рецепт «{d['title']}» у Grocy: {written} інгредієнтів, нових продуктів {created}."
+
+
+_NOTES_DIR = pathlib.Path(__file__).parent / "data" / "notes"
+_NOTE_ADD_RE = re.compile(r"(запиши|запам'ятай|запамятай|занотуй|додай нотатку|нова нотатка|збережи нотатку)", re.IGNORECASE)
+_NOTE_READ_RE = re.compile(r"(нотатк|що я (просив|казав|записував)|що ти записав)", re.IGNORECASE)
+
+
+def _notes_file() -> pathlib.Path:
+    return _NOTES_DIR / f"{users.current()}.jsonl"  # the caller only ever sees their own file
+
+
+def _note_schemas(text: str) -> list[dict]:
+    out = []
+    if _NOTE_ADD_RE.search(text):
+        out.append({"type": "function", "function": {
+            "name": "note_add",
+            "description": "Записати особисту нотатку користувача (бачить лише він). Лише за явним проханням записати/запам'ятати.",
+            "parameters": {"type": "object", "properties": {"text": {"type": "string", "description": "Текст нотатки, як сказав користувач"}}, "required": ["text"]}}})
+    if _NOTE_READ_RE.search(text) or out:
+        out.append({"type": "function", "function": {
+            "name": "notes_search",
+            "description": "Особисті нотатки користувача: пошук за словом або останні. Інших людей нотатки недоступні.",
+            "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Слово для пошуку; порожньо — останні"}}}}})
+    return out
+
+
+def tool_note_add(args: dict) -> str:
+    text = (args.get("text") or "").strip()
+    if not text:
+        return "НЕ ЗМІНЕНО. Порожня нотатка."
+    _NOTES_DIR.mkdir(parents=True, exist_ok=True)
+    with _notes_file().open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"at": datetime.datetime.now(_TZ).strftime("%Y-%m-%d %H:%M"), "text": text}, ensure_ascii=False) + "\n")
+    return f"Записано в особисті нотатки: «{text[:80]}»."
+
+
+def tool_notes_search(args: dict) -> str:
+    path = _notes_file()
+    if not path.exists():
+        return "Особистих нотаток ще немає."
+    rows = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    q = (args.get("query") or "").lower().strip()
+    if q:
+        rows = [r for r in rows if any(w[:5] in r["text"].lower() for w in q.split())]
+    if not rows:
+        return "У ваших нотатках нічого не знайдено."
+    return "\n".join(f"{r['at']}: {r['text']}" for r in rows[-15:])
 
 
 DISPATCH = {
@@ -1400,6 +1457,8 @@ DISPATCH = {
     "qbittorrent_add": tool_qbittorrent_add,
     "toloka_search": tool_toloka_search,
     "jellyfin_find": tool_jellyfin_find,
+    "note_add": tool_note_add,
+    "notes_search": tool_notes_search,
     "grocy_stock": tool_grocy_stock,
     "grocy_shopping_list": tool_grocy_shopping_list,
     "grocy_recipes": tool_grocy_recipes,
@@ -1423,6 +1482,8 @@ def call_tool(name: str, arguments_json: str, user_text: str = "") -> str:
     handler = DISPATCH.get(name)
     if not handler:
         return f"Невідомий інструмент: {name}"
+    if name in ADMIN_TOOLS and not users.is_admin():
+        return "НЕ ЗМІНЕНО. Ця дія доступна лише адміністратору."
     try:
         if name in ("qbittorrent_add", "toloka_add", "grocy_recipe_import"):
             return handler(args, user_text)
