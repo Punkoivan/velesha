@@ -97,6 +97,7 @@ def system_prompt(offered: set[str]) -> str:
         "- search_knowledge: рецепти (Tandoor) і Jellyfin (що дивився, поради); знімок історії HA може бути застарілим\n"
         "- grocy_stock / grocy_shopping_list: домашні запаси (їжа, господарські товари) і список покупок у Grocy\n"
         "- grocy_recipes: рецепти, заведені в Grocy, і чи вистачає для них запасів (пошук рецептів за змістом — search_knowledge)\n"
+        "- jellyfin_now_playing: що зараз грає на Kodi і скільки залишилось до кінця\n"
         "- jellyfin_find: чи Є фільм/серіал у бібліотеці Jellyfin за назвою (точний пошук)\n"
         "- get_live_state: ПОТОЧНЕ значення будь-якого пристрою, сенсора чи лічильника "
         "(відчинені двері, температура, скільки запитів заблокував AdGuard зараз) — "

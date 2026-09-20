@@ -76,6 +76,8 @@ One search surface across all sources, not per-source scripts.
       списання/додавання/список покупок (дії за явною фразою).
 - [x] **Пам'ять розмови** (ADR-0034) і **кілька користувачів** (ADR-0035):
       ключ API = особа, адмін-інструменти, окремі нотатки й пам'ять.
+- [x] **Що зараз грає / залишок до кінця** (`jellyfin_now_playing`): читає сесію
+      Kodi у Jellyfin, залишок і час завершення рахуються в коді.
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar

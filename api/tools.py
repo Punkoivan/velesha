@@ -232,6 +232,17 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "jellyfin_now_playing",
+            "description": (
+                "Що зараз відтворюється на Kodi/Jellyfin і скільки залишилось до кінця: назва, позиція, "
+                "залишок, о котрій закінчиться, чи на паузі. Для 'що зараз грає', 'скільки залишилось до кінця фільму/серії'."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "grocy_shopping_list",
             "description": "Поточний список покупок у Grocy.",
             "parameters": {"type": "object", "properties": {}},
@@ -1457,6 +1468,38 @@ def tool_notes_search(args: dict) -> str:
     return "\n".join(f"{r['at']}: {r['text']}" for r in rows[-15:])
 
 
+def _dur(ticks: int) -> str:
+    total = int(ticks / 10_000_000)  # Jellyfin ticks are 100 ns
+    h, rem = divmod(total, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h} год {m} хв" if h else f"{m} хв {sec} с" if m < 5 else f"{m} хв"
+
+
+def tool_jellyfin_now_playing(args: dict) -> str:
+    playing = [s for s in jellyfin_client.sessions() if s.get("NowPlayingItem")]
+    if not playing:
+        return "Зараз нічого не відтворюється."
+    playing.sort(key=lambda s: _PLAY_DEVICE_MARKER not in f"{s.get('DeviceName', '')} {s.get('Client', '')}".lower())
+    lines = []
+    for s in playing[:3]:
+        item, st = s["NowPlayingItem"], s.get("PlayState") or {}
+        title = item.get("Name", "?")
+        if item.get("SeriesName"):
+            title = f"{item['SeriesName']}: {title}"
+        total, pos = item.get("RunTimeTicks"), st.get("PositionTicks")
+        line = f"{s.get('DeviceName', '?')}: «{title}»"
+        if total and pos is not None:
+            left = max(total - pos, 0)
+            line += f", пройшло {_dur(pos)} з {_dur(total)}, залишилось {_dur(left)}"
+            if st.get("IsPaused"):
+                line += " (на паузі)"
+            else:
+                end = datetime.datetime.now(_TZ) + datetime.timedelta(seconds=left / 10_000_000)
+                line += f", закінчиться близько {end:%H:%M}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
@@ -1468,6 +1511,7 @@ DISPATCH = {
     "qbittorrent_add": tool_qbittorrent_add,
     "toloka_search": tool_toloka_search,
     "jellyfin_find": tool_jellyfin_find,
+    "jellyfin_now_playing": tool_jellyfin_now_playing,
     "note_add": tool_note_add,
     "notes_search": tool_notes_search,
     "grocy_stock": tool_grocy_stock,
