@@ -72,6 +72,8 @@ One search surface across all sources, not per-source scripts.
       flags 'added' claims when no action tool succeeded.
 - [x] **Toloka add across turns** (ADR-0031): a picked variant is remembered
       while only the category is missing; bare category replies work.
+- [x] **Grocy як домашні запаси** (ADR-0032): міграція з Obsidian, читання +
+      списання/додавання/список покупок (дії за явною фразою).
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar

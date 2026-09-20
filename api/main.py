@@ -53,6 +53,9 @@ _CONTROL_LINES = {
         "- control_jellyfin_playback: керувати тим, що зараз грає на Kodi — пауза, продовжити, "
         "зупинити, наступна/попередня серія (НЕ передавай це як назву фільму)\n"
     ),
+    "grocy_consume": "- grocy_consume: списати використане зі запасів (кількість в одиницях продукту у Grocy)\n",
+    "grocy_add_stock": "- grocy_add_stock: додати куплене до запасів\n",
+    "grocy_shopping_add": "- grocy_shopping_add: додати продукт до списку покупок\n",
     "web_search": "- web_search: пошук в інтернеті (свіже, новини, нові фільми) — коли користувач просить пошукати в інтернеті\n",
     "toloka_search": "- toloka_search: пошук роздач на Толоці за назвою (розмір, сідери)\n",
     "toloka_add": (
@@ -82,6 +85,7 @@ def system_prompt(offered: set[str]) -> str:
         "фільмів тощо; не кажи, що користувач «ввів» чи «написав» запит.\n\n"
         "У тебе є інструменти:\n"
         "- search_knowledge: рецепти (Tandoor) і Jellyfin (що дивився, поради); знімок історії HA може бути застарілим\n"
+        "- grocy_stock / grocy_shopping_list: домашні запаси (їжа, господарські товари) і список покупок у Grocy\n"
         "- jellyfin_find: чи Є фільм/серіал у бібліотеці Jellyfin за назвою (точний пошук)\n"
         "- get_live_state: ПОТОЧНЕ значення будь-якого пристрою, сенсора чи лічильника "
         "(відчинені двері, температура, скільки запитів заблокував AdGuard зараз) — "
@@ -182,10 +186,10 @@ def _complete_hosted(messages: list[dict], tools: list[dict]) -> dict | None:
 
 # Every action tool starts its success message with one of these; anything else
 # ("НЕ ДОДАНО …", "Не …", errors) means nothing was changed.
-_ACTION_OK = ("Запущено", "Додано", "Поставлено на паузу", "Продовжено", "Зупинено")
+_ACTION_OK = ("Запущено", "Додано", "Поставлено на паузу", "Продовжено", "Зупинено", "Списано")
 _CLAIM_RE = re.compile(
     r"\b(додав|додала|додано|запустив|запустила|запущено|поставив на паузу|поставлено на паузу|"
-    r"продовжив|продовжено|зупинив|зупинено)\b", re.IGNORECASE)
+    r"продовжив|продовжено|зупинив|зупинено|списав|списала|списано)\b", re.IGNORECASE)
 
 
 def unfounded_claim(answer: str, acted: bool) -> str:

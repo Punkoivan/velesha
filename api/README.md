@@ -50,6 +50,13 @@ usable via `/api/conversation/process` or HA's Assist pipeline.
   output, Qwen2.5-3B occasionally misreads which line in a list is the
   answer (see ADR-0018's Consequences) — not common, but not zero.
 
+## Grocy
+
+Домашні запаси (їжа, побутова хімія) — у Grocy (ADR-0032): `GROCY_URL`,
+`GROCY_API_KEY` в `api/secrets.enc.env`. Читання: `grocy_stock`,
+`grocy_shopping_list`; дії (лише за явною фразою): `grocy_consume`,
+`grocy_add_stock`, `grocy_shopping_add`.
+
 ## Model selection
 
 Local Qwen2.5-3B by default. `CHAT_PROVIDER=openai CHAT_MODEL=gpt-4.1-mini`

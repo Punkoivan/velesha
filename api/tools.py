@@ -20,6 +20,7 @@ import zoneinfo
 import requests
 
 import guardrails
+import grocy_client
 import ha_client
 import jellyfin_client
 import qbit_client
@@ -195,6 +196,28 @@ TOOLS = [
                 "properties": {"title": {"type": "string", "description": "Назва фільму чи серіалу"}},
                 "required": ["title"],
             },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "grocy_stock",
+            "description": (
+                "Що є в домашніх запасах (Grocy: їжа і господарські товари): скільки чогось, де лежить. "
+                "Без query — короткий перелік. Для 'чи є X', 'скільки Y', 'що є з круп/консервів'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "Назва чи частина назви продукту, напр. 'цукор', 'круп', 'папір'"}},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "grocy_shopping_list",
+            "description": "Поточний список покупок у Grocy.",
+            "parameters": {"type": "object", "properties": {}},
         },
     },
 ]
@@ -460,7 +483,8 @@ def tool_get_sensor_history(args: dict) -> str:
 # in testing: the 3B model called the play tool on "що є з Декстера?" and
 # "порадь серіал на вечір" (ADR-0021). Deliberately a code gate, not a
 # model decision.
-CONTROL_TOOLS = {"play_on_jellyfin_device", "control_jellyfin_playback", "qbittorrent_add", "toloka_add"}
+CONTROL_TOOLS = {"play_on_jellyfin_device", "control_jellyfin_playback", "qbittorrent_add", "toloka_add",
+                 "grocy_consume", "grocy_add_stock", "grocy_shopping_add"}
 
 # Answered verbatim, without a second model call (ADR-0024).
 PASSTHROUGH_TOOLS = {"toloka_search"}
@@ -504,6 +528,10 @@ def _qbit_add_schema() -> dict:
 _ADD_VERB_RE = re.compile(
     r"(додай|додати|завантаж|скач|качай|постав|давай|бери|візьми|обер|вибер|варіант|номер|№|\b[1-8]\b|"
     r"перш|друг|трет|четвер|п'ят)", re.IGNORECASE)
+_GROCY_CONSUME_RE = re.compile(r"(використав|використала|витратив|витратила|списав|списала|з'їв|з'їла|випив|випила|закінчив|закінчил)", re.IGNORECASE)
+_GROCY_ADD_RE = re.compile(r"(купив|купила|докупив|докупила|поклав|поклала|поповни|прибав|додай до запас|додати до запас)", re.IGNORECASE)
+_GROCY_SHOP_RE = re.compile(r"(список покупок|списку покупок|треба купити|потрібно купити|купити)", re.IGNORECASE)
+
 _SEARCH_TTL = 30 * 60
 _last_search: dict = {"at": 0.0, "rows": []}
 # A variant the user already picked whose category is still missing. The agent
@@ -564,6 +592,31 @@ def _toloka_add_schema() -> dict:
     }
 
 
+def _grocy_action_schema(name: str, desc: str) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": desc,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product": {"type": "string", "description": "Назва продукту"},
+                    "amount": {"type": "number", "description": "Кількість В ОДИНИЦЯХ ПРОДУКТУ у Grocy (спершу подивись grocy_stock, якщо не певен: кг чи г, л чи мл)"},
+                },
+                "required": ["product", "amount"],
+            },
+        },
+    }
+
+
+_GROCY_SCHEMAS = {
+    "grocy_consume": ("Списати зі запасів використане/витрачене (Grocy). Лише коли користувач каже, що використав/витратив/з'їв.", _GROCY_CONSUME_RE),
+    "grocy_add_stock": ("Додати до запасів куплене/поповнене (Grocy). Лише коли користувач каже, що купив/докупив/поклав.", _GROCY_ADD_RE),
+    "grocy_shopping_add": ("Додати продукт до списку покупок Grocy (запас не змінює). Лише коли користувач просить додати в список покупок / що треба купити.", _GROCY_SHOP_RE),
+}
+
+
 def tools_for(user_text: str) -> list[dict]:
     text = user_text or ""
     tools = TOOLS if _COMMAND_RE.search(text) else [t for t in TOOLS if t["function"]["name"] not in CONTROL_TOOLS]
@@ -574,6 +627,9 @@ def tools_for(user_text: str) -> list[dict]:
     # Read-only and cheap, so always offered: a word gate looked only at the
     # latest message and lost the request in multi-turn talk (ADR-0029).
     tools = tools + [_toloka_search_schema()]
+    for name, (desc, gate) in _GROCY_SCHEMAS.items():
+        if gate.search(text):  # state-changing: only on an explicit phrase (ADR-0032)
+            tools = tools + [_grocy_action_schema(name, desc)]
     if _WEB_RE.search(text) and web_search_available():
         tools = tools + [_web_search_schema()]
     # Adding from Toloka works only on a variant the user was just shown.
@@ -917,6 +973,103 @@ def tool_jellyfin_find(args: dict) -> str:
     return "У бібліотеці Jellyfin є: " + "; ".join(lines) + "."
 
 
+def _grocy_units() -> dict[int, str]:
+    return {u["id"]: u["name"] for u in grocy_client.objects("quantity_units")}
+
+
+def _grocy_match(query: str) -> list[dict]:
+    """Products best matching a name, best first; only clear matches (score > 0.75)."""
+    q = query.lower().strip()
+    scored = []
+    for p in grocy_client.objects("products"):
+        name = p["name"].lower()
+        if name == q:
+            score = 2.0
+        else:  # inflected forms ("цукру" for "Цукор"): best word-vs-word similarity
+            score = max((difflib.SequenceMatcher(None, qt, w).ratio()
+                         for qt in q.split() for w in name.split()), default=0)
+            if any(w.startswith(qt) for qt in q.split() for w in name.split()):
+                score = max(score, 1.0)
+        if score > 0.75:
+            scored.append((score, p))
+    scored.sort(key=lambda x: -x[0])
+    return [p for _, p in scored]
+
+
+def _fmt_amount(a: float) -> str:
+    return f"{a:g}"
+
+
+def tool_grocy_stock(args: dict) -> str:
+    units, locs = _grocy_units(), {l["id"]: l["name"] for l in grocy_client.objects("locations")}
+    stock = {row["product_id"]: float(row["amount"]) for row in grocy_client.stock()}
+    query = (args.get("query") or "").strip()
+    products = _grocy_match(query) if query else grocy_client.objects("products")
+    if query and not products:
+        return f"У запасах Grocy немає нічого схожого на «{query}»."
+    lines = []
+    for p in products[:25]:
+        amt = stock.get(p["id"])
+        have = f"{_fmt_amount(amt)} {units.get(p['qu_id_stock'], '')}" if amt else "запасу немає (кількість не вказана)"
+        lines.append(f"{p['name']}: {have} ({locs.get(p['location_id'], '?')})")
+    more = f"\n… і ще {len(products) - 25}." if len(products) > 25 else ""
+    return "\n".join(lines) + more
+
+
+def tool_grocy_shopping_list(args: dict) -> str:
+    units = _grocy_units()
+    names = {p["id"]: p for p in grocy_client.objects("products")}
+    rows = grocy_client.shopping_list()
+    if not rows:
+        return "Список покупок порожній."
+    return "\n".join(f"{names[r['product_id']]['name']}: {_fmt_amount(float(r['amount']))} {units.get(names[r['product_id']]['qu_id_stock'], '')}" for r in rows if r.get("product_id") in names)
+
+
+def _grocy_one(product: str):
+    """(product, None) for one clear match, else (None, refusal message)."""
+    found = _grocy_match(product)
+    if not found:
+        return None, f"НЕ ЗМІНЕНО. У Grocy немає продукту «{product}»."
+    if len(found) > 1 and found[0]["name"].lower() != product.lower().strip():
+        # several plausible products and no exact name: never guess which one
+        return None, "НЕ ЗМІНЕНО. Уточни, який саме продукт: " + "; ".join(p["name"] for p in found[:5]) + "."
+    return found[0], None
+
+
+def _grocy_change(kind: str, args: dict) -> str:
+    amount = args.get("amount")
+    if not isinstance(amount, (int, float)) or amount <= 0:
+        return "НЕ ЗМІНЕНО. Кількість має бути додатним числом."
+    p, err = _grocy_one(args.get("product", ""))
+    if err:
+        return err
+    unit = _grocy_units().get(p["qu_id_stock"], "")
+    have = grocy_client.product_stock(p["id"])
+    if kind == "consume":
+        if amount > have:
+            # also catches g-vs-kg slips: 200 (кг) of something with 2 кг in stock
+            return f"НЕ ЗМІНЕНО. Списати {_fmt_amount(amount)} {unit}, а в запасі лише {_fmt_amount(have)} {unit} «{p['name']}». Перевір кількість і одиницю."
+        grocy_client.consume(p["id"], amount)
+        return f"Списано {_fmt_amount(amount)} {unit} «{p['name']}». Залишилось {_fmt_amount(have - amount)} {unit}."
+    if kind == "add":
+        grocy_client.add_stock(p["id"], amount)
+        return f"Додано до запасів {_fmt_amount(amount)} {unit} «{p['name']}». Тепер {_fmt_amount(have + amount)} {unit}."
+    grocy_client.shopping_add(p["id"], amount)
+    return f"Додано до списку покупок: {_fmt_amount(amount)} {unit} «{p['name']}»."
+
+
+def tool_grocy_consume(args: dict) -> str:
+    return _grocy_change("consume", args)
+
+
+def tool_grocy_add_stock(args: dict) -> str:
+    return _grocy_change("add", args)
+
+
+def tool_grocy_shopping_add(args: dict) -> str:
+    return _grocy_change("shop", args)
+
+
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
@@ -928,6 +1081,11 @@ DISPATCH = {
     "qbittorrent_add": tool_qbittorrent_add,
     "toloka_search": tool_toloka_search,
     "jellyfin_find": tool_jellyfin_find,
+    "grocy_stock": tool_grocy_stock,
+    "grocy_shopping_list": tool_grocy_shopping_list,
+    "grocy_consume": tool_grocy_consume,
+    "grocy_add_stock": tool_grocy_add_stock,
+    "grocy_shopping_add": tool_grocy_shopping_add,
     "toloka_add": tool_toloka_add,
     "web_search": tool_web_search,
 }
