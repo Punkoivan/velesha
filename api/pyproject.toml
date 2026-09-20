@@ -13,4 +13,6 @@ dependencies = [
     "qdrant-client>=1.19.1",
     "requests>=2.34.2",
     "beautifulsoup4>=4.15.0",
+    "google-adk>=2.9.2",
+    "litellm>=1.102.0",
 ]

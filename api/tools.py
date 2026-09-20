@@ -219,9 +219,9 @@ TOOLS = [
         "function": {
             "name": "grocy_recipes",
             "description": (
-                "Рецепти, заведені в Grocy, і чи вистачає для них інгредієнтів у запасах. "
-                "Для 'що я можу приготувати з наявного', 'чого не вистачає на X'. Це лише рецепти, "
-                "яким користувач додав інгредієнти в Grocy; для пошуку рецептів за змістом — search_knowledge."
+                "ЛИШЕ коли питають, чи ВИСТАЧАЄ інгредієнтів у запасах для рецептів, заведених у Grocy "
+                "('що я можу приготувати з наявного', 'чого не вистачає на X'). Порада 'що приготувати', "
+                "рецепти за змістом чи інгредієнтом (курка, борщ) — це search_knowledge, не цей інструмент."
             ),
             "parameters": {
                 "type": "object",
@@ -397,7 +397,18 @@ def _parse_day(text: str) -> datetime.date | None:
                 return datetime.date(int(year) + (2000 if len(year) == 2 else 0), month, day)
             d = datetime.date(today.year, month, day)
             return d if d <= today else datetime.date(today.year - 1, month, day)
-        return datetime.date.fromisoformat(text)
+        d = datetime.date.fromisoformat(text)
+        if (today - d).days > 365:
+            # The model also sends ISO dates with a stale year ("2023-09-18");
+            # HA keeps far less than a year, so such a date can only mean the
+            # latest occurrence of that day (ADR-0036).
+            try:
+                d = d.replace(year=today.year)
+                if d > today:
+                    d = d.replace(year=today.year - 1)
+            except ValueError:  # 29 Feb
+                return None
+        return d
     except ValueError:
         return None
 
@@ -1214,7 +1225,7 @@ def tool_grocy_recipes(args: dict) -> str:
     recipes = [r for r in _grocy_recipe_match(query) if r.get("type") == "normal"]
     if not recipes:
         return ("У Grocy немає рецептів" + (f" за «{query}»" if query else "")
-                + ". Рецепти зі структурованими інгредієнтами треба спершу завести в Grocy.")
+                + ". Для поради чи пошуку рецептів використай search_knowledge (Tandoor).")
     lines = []
     for r in recipes[:15]:
         f = grocy_client.recipe_fulfillment(r["id"])

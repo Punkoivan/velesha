@@ -59,6 +59,7 @@ def rec(n):
 
 
 main.call_tool, guardrails.record_usage, main.guardrails.record_usage = fake_call_tool, rec, rec
+tools.call_tool = fake_call_tool  # the ADK engine reaches tools through this module
 if BACKEND != "local":  # a silent fallback would make the comparison meaningless
     def no_fallback(*a, **k):
         raise RuntimeError("FALLBACK-to-local")
@@ -95,7 +96,7 @@ QUESTIONS = [
     ("ratio0", "скільки роздач з рейтингом 0?", {"qbittorrent_list", "qbittorrent_status"}, lambda a: str(zero_ratio) in a),
     ("session", "скільки віддано в qBittorrent за сесію?", {"qbittorrent_status"}, lambda a: any(abs(float(x.replace(",", ".")) - session_gb) < 1.5 for x in re.findall(r"\d+[.,]?\d*", a))),
     ("adguard", "скільки запитів пройшло через AdGuard вчора?", {"get_sensor_history"}, lambda a: adguard is not None and adguard in a.replace(" ", "")),
-    ("energy", "скільки 18.09 числа пралка використала електроенергії?", {"get_sensor_history"}, lambda a: energy is not None and energy in a),
+    ("energy", "скільки 18.09 числа пралка використала електроенергії?", {"get_sensor_history"}, lambda a: energy is not None and energy in a.replace(",", ".")),
     ("tv", "коли востаннє було вімкнено телевізор?", {"get_sensor_history"}, lambda a: any(t in a for t in tv_times)),
     ("recipe", "порадь щось із куркою на вечерю", {"search_knowledge"}, lambda a: "курк" in a.lower()),
     ("toloka", "знайди Mandy 2018 на толоці", {"toloka_search"}, lambda a: "Толоці" in a and "Mandy" in a or "Менді" in a),
@@ -107,6 +108,11 @@ RUNS = int(os.environ.get("EVAL_RUNS", "1"))  # models are non-deterministic: re
 rows = []
 ONLY = set(filter(None, os.environ.get("EVAL_ONLY", "").split(",")))
 PAUSE = float(os.environ.get("EVAL_PAUSE", "0"))  # free tiers rate-limit; spread the requests
+ENGINE = os.environ.get("EVAL_ENGINE", "legacy")  # EVAL_ENGINE=adk runs the ADK agent (ADR-0036)
+if ENGINE == "adk":
+    import asyncio
+    LOOP = asyncio.new_event_loop()
+    ADK = main._adk_engine()
 for qid, text, tool_ok, check in [q for q in QUESTIONS if not ONLY or q[0] in ONLY for _ in range(RUNS)]:
     time.sleep(PAUSE)
     SELECT_ONLY = tool_ok is not None
@@ -115,7 +121,10 @@ for qid, text, tool_ok, check in [q for q in QUESTIONS if not ONLY or q[0] in ON
     msgs = [{"role": "system", "content": main.system_prompt({t["function"]["name"] for t in off})}, {"role": "user", "content": text}]
     t0 = time.time()
     try:
-        answer = main.run_agent(msgs, off, text)
+        if ENGINE == "adk":
+            answer = LOOP.run_until_complete(ADK.run(f"eval-{qid}-{time.time_ns()}", text))[0]
+        else:
+            answer = main.run_agent(msgs, off, text)
     except Stop:
         answer = ""
     except Exception as e:  # noqa: BLE001

@@ -17,6 +17,7 @@ Usage:
       'sops exec-env secrets.enc.env "uv run uvicorn main:app --host 0.0.0.0 --port 8090"'
 """
 
+import asyncio
 import datetime
 import json
 import os
@@ -296,8 +297,22 @@ def _remember(user: str, assistant: str, now: float) -> None:
     del turns[:-10]
 
 
+_engine = None
+
+
+def _adk_engine():
+    global _engine
+    if _engine is None:
+        import adk_agent
+        _engine = adk_agent.Engine(
+            system_prompt, _ACTION_OK, chat_model=CHAT_MODEL, chat_key=CHAT_API_KEY,
+            hosted_base=HOSTED_URL.removesuffix("/chat/completions") if HOSTED_URL else None,
+            local_base=LOCAL_URL.removesuffix("/chat/completions"))
+    return _engine
+
+
 @app.post("/v1/chat/completions")
-def chat_completions(req: ChatCompletionRequest, authorization: str | None = Header(None)):
+async def chat_completions(req: ChatCompletionRequest, authorization: str | None = Header(None)):
     caller = users.resolve(authorization)
     if caller is None:
         return JSONResponse({"error": {"message": "Unknown API key", "type": "invalid_request_error"}}, status_code=401)
@@ -310,23 +325,28 @@ def chat_completions(req: ChatCompletionRequest, authorization: str | None = Hea
                 "last_user": next((m.content for m in reversed(req.messages) if m.role == "user"), None),
                 "n_messages": len(req.messages),
             }, ensure_ascii=False) + "\n")
-    messages = [{"role": "system", "content": ""}]
-    messages += [{"role": m.role, "content": m.content or ""} for m in req.messages if m.role != "system"]
-
     last_user = next((m.content or "" for m in reversed(req.messages) if m.role == "user"), "")
-    now = time.time()
-    if len(messages) == 2:  # system + one user message: HA gave no history
-        messages[1:1] = _recall(now)
-    offered = tools_for(last_user)
-    messages[0]["content"] = system_prompt({t["function"]["name"] for t in offered})
-    state = {"acted": False}
-    answer = unfounded_claim(run_agent(messages, offered, last_user, state), state["acted"])
+
+    if os.environ.get("AGENT_ENGINE", "legacy") == "adk":
+        answer, acted, _ = await _adk_engine().run(caller, last_user)
+        answer = unfounded_claim(answer, acted)
+    else:
+        messages = [{"role": "system", "content": ""}]
+        messages += [{"role": m.role, "content": m.content or ""} for m in req.messages if m.role != "system"]
+        now = time.time()
+        if len(messages) == 2:  # system + one user message: HA gave no history
+            messages[1:1] = _recall(now)
+        offered = tools_for(last_user)
+        messages[0]["content"] = system_prompt({t["function"]["name"] for t in offered})
+        state = {"acted": False}
+        answer = await asyncio.to_thread(run_agent, messages, offered, last_user, state)
+        answer = unfounded_claim(answer, state["acted"])
+        _remember(last_user, answer, now)
     # A silent drop to the weak local model looked like the assistant getting
     # stupid (the user's torrent-search confusion, ADR-0029) — say so.
     if HOSTED_URL and guardrails.budget_left() <= 0:
         answer = "(Денний ліміт токенів вичерпано — відповідає слабша локальна модель.) " + answer
 
-    _remember(last_user, answer, now)
     if req.stream:
         return StreamingResponse(iter([sse_chunk(answer)]), media_type="text/event-stream")
 
