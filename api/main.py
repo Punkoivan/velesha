@@ -56,6 +56,7 @@ _CONTROL_LINES = {
     "grocy_consume": "- grocy_consume: списати використане зі запасів (кількість в одиницях продукту у Grocy)\n",
     "grocy_recipe_consume": "- grocy_recipe_consume: рецепт з Grocy приготовано — списати інгредієнти\n",
     "grocy_recipe_shopping": "- grocy_recipe_shopping: додати до списку покупок нестачу для рецепта з Grocy\n",
+    "grocy_recipe_import": "- grocy_recipe_import: перенести рецепт з Tandoor у Grocy (чернетка → підтвердження користувача → confirm=true)\n",
     "grocy_add_stock": "- grocy_add_stock: додати куплене до запасів\n",
     "grocy_shopping_add": "- grocy_shopping_add: додати продукт до списку покупок\n",
     "web_search": "- web_search: пошук в інтернеті (свіже, новини, нові фільми) — коли користувач просить пошукати в інтернеті\n",
@@ -189,7 +190,7 @@ def _complete_hosted(messages: list[dict], tools: list[dict]) -> dict | None:
 
 # Every action tool starts its success message with one of these; anything else
 # ("НЕ ДОДАНО …", "Не …", errors) means nothing was changed.
-_ACTION_OK = ("Запущено", "Додано", "Поставлено на паузу", "Продовжено", "Зупинено", "Списано")
+_ACTION_OK = ("Запущено", "Додано", "Поставлено на паузу", "Продовжено", "Зупинено", "Списано", "Створено")
 _CLAIM_RE = re.compile(
     r"\b(додав|додала|додано|запустив|запустила|запущено|поставив на паузу|поставлено на паузу|"
     r"продовжив|продовжено|зупинив|зупинено|списав|списала|списано)\b", re.IGNORECASE)

@@ -500,10 +500,10 @@ def tool_get_sensor_history(args: dict) -> str:
 # model decision.
 CONTROL_TOOLS = {"play_on_jellyfin_device", "control_jellyfin_playback", "qbittorrent_add", "toloka_add",
                  "grocy_consume", "grocy_add_stock", "grocy_shopping_add",
-                 "grocy_recipe_consume", "grocy_recipe_shopping"}
+                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import"}
 
 # Answered verbatim, without a second model call (ADR-0024).
-PASSTHROUGH_TOOLS = {"toloka_search"}
+PASSTHROUGH_TOOLS = {"toloka_search", "grocy_recipe_import"}
 _COMMAND_RE = re.compile(
     r"(включ|увімкн|ввімкн|запуст|постав|відтвор|\bplay\b|пауз|продовж|зупин|стоп|наступн|попередн|далі|пропуст|\bnext\b|\bstop\b|\bpause\b)",
     re.IGNORECASE,
@@ -550,6 +550,14 @@ _GROCY_SHOP_RE = re.compile(r"(список покупок|списку поку
 
 _GROCY_COOK_RE = re.compile(r"(приготував|приготувала|зварив|зварила|спік|спекла|засмажив|засмажила)", re.IGNORECASE)
 _GROCY_RSHOP_RE = re.compile(r"(список покупок|списку покупок|додай.*не вистача|не вистача.*додай)", re.IGNORECASE)
+_GROCY_IMPORT_RE = re.compile(r"рецепт.*(grocy|гроч|грок)|(grocy|гроч|грок).*рецепт", re.IGNORECASE)
+_CONFIRM_RE = re.compile(r"^\W*(так|ок|окей|добре|давай|підтверджую|записуй|роби|створюй|додавай)\b", re.IGNORECASE)
+_pending_recipe: dict = {"draft": None, "at": 0.0}
+
+
+def _fresh_recipe_draft() -> bool:
+    return _pending_recipe["draft"] is not None and time.time() - _pending_recipe["at"] < _PENDING_TTL
+
 _SEARCH_TTL = 30 * 60
 _last_search: dict = {"at": 0.0, "rows": []}
 # A variant the user already picked whose category is still missing. The agent
@@ -643,6 +651,26 @@ def _grocy_recipe_schema(name: str, desc: str) -> dict:
     }
 
 
+_GROCY_IMPORT_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "grocy_recipe_import",
+        "description": (
+            "Перенести рецепт з Tandoor у Grocy (зі структурованими інгредієнтами). Спершу без confirm — "
+            "повертає чернетку на підтвердження. Виклик з confirm=true лише коли користувач підтвердив чернетку."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "recipe": {"type": "string", "description": "Назва рецепта в Tandoor"},
+                "confirm": {"type": "boolean", "description": "true — записати підтверджену чернетку"},
+            },
+            "required": ["recipe"],
+        },
+    },
+}
+
+
 _GROCY_RECIPE_SCHEMAS = {
     "grocy_recipe_consume": ("Позначити, що рецепт з Grocy приготовано: списати його інгредієнти зі запасів. Лише коли користувач каже, що приготував/зварив.", _GROCY_COOK_RE),
     "grocy_recipe_shopping": ("Додати до списку покупок Grocy те, чого не вистачає для рецепта. Лише за проханням додати нестачу в список покупок.", _GROCY_RSHOP_RE),
@@ -669,6 +697,8 @@ def tools_for(user_text: str) -> list[dict]:
     for name, (desc, gate) in _GROCY_SCHEMAS.items():
         if gate.search(text):  # state-changing: only on an explicit phrase (ADR-0032)
             tools = tools + [_grocy_action_schema(name, desc)]
+    if _GROCY_IMPORT_RE.search(text) or (_fresh_recipe_draft() and _CONFIRM_RE.search(text)):
+        tools = tools + [_GROCY_IMPORT_SCHEMA]
     for name, (desc, gate) in _GROCY_RECIPE_SCHEMAS.items():
         if gate.search(text):
             tools = tools + [_grocy_recipe_schema(name, desc)]
@@ -1019,8 +1049,10 @@ def _grocy_units() -> dict[int, str]:
     return {u["id"]: u["name"] for u in grocy_client.objects("quantity_units")}
 
 
-def _grocy_match(query: str) -> list[dict]:
-    """Products best matching a name, best first; only clear matches (score > 0.75)."""
+def _grocy_match(query: str, strict: bool = False) -> list[dict]:
+    """Products best matching a name, best first; only clear matches (score > 0.75).
+    strict: every word of the query must match a product word (recipe import —
+    "сир домашній" must not match "Компот домашній")."""
     q = query.lower().strip()
     scored = []
     for p in grocy_client.objects("products"):
@@ -1028,10 +1060,14 @@ def _grocy_match(query: str) -> list[dict]:
         if name == q:
             score = 2.0
         else:  # inflected forms ("цукру" for "Цукор"): best word-vs-word similarity
-            score = max((difflib.SequenceMatcher(None, qt, w).ratio()
-                         for qt in q.split() for w in name.split()), default=0)
-            if any(w.startswith(qt) for qt in q.split() for w in name.split()):
-                score = max(score, 1.0)
+            per_token = []
+            for qt in q.split():
+                best = 0.0
+                for w in name.split():
+                    r = 1.0 if w.startswith(qt) else difflib.SequenceMatcher(None, qt, w).ratio()
+                    best = max(best, r)
+                per_token.append(best)
+            score = (min if strict else max)(per_token, default=0)
         if score > 0.75:
             scored.append((score, p))
     scored.sort(key=lambda x: -x[0])
@@ -1169,6 +1205,141 @@ def tool_grocy_recipe_shopping(args: dict) -> str:
     return f"Додано до списку покупок нестачу для рецепта «{r['name']}» ({f.get('missing_products_count', '?')} інгр.)."
 
 
+_UNIT_TO_BASE = {"г": ("м", 1), "g": ("м", 1), "кг": ("м", 1000), "kg": ("м", 1000),
+                 "мл": ("о", 1), "ml": ("о", 1), "л": ("о", 1000), "l": ("о", 1000)}
+
+
+def _convert(amount: float, from_unit: str, to_unit: str) -> float | None:
+    a, b = from_unit.lower().strip(), to_unit.lower().strip()
+    if a == b:
+        return amount
+    if a in _UNIT_TO_BASE and b in _UNIT_TO_BASE and _UNIT_TO_BASE[a][0] == _UNIT_TO_BASE[b][0]:
+        return amount * _UNIT_TO_BASE[a][1] / _UNIT_TO_BASE[b][1]
+    return None  # шт vs г and other mismatches: never guess a conversion
+
+
+def _tandoor_recipe(name: str) -> tuple[dict | None, str | None]:
+    pts, _ = qdrant_client().scroll("tandoor_recipes", limit=200, with_payload=True)
+    recs = [p.payload for p in pts]
+    q = name.lower().strip()
+    exact = [r for r in recs if r["title"].lower() == q]
+    found = exact or [r for r in recs if all(any(w.startswith(qt) for w in r["title"].lower().split()) for qt in q.split())]
+    if not found:
+        return None, f"У Tandoor немає рецепта «{name}»."
+    if len(found) > 1 and not exact:
+        return None, "Уточни, який саме рецепт: " + "; ".join(r["title"] for r in found[:6]) + "."
+    return found[0], None
+
+
+def _extract_ingredients(text: str) -> tuple[int, list[dict]]:
+    key = _openai_key()
+    if not key or guardrails.budget_left() <= 0:
+        raise RuntimeError("немає ключа OpenAI або вичерпано денний ліміт токенів")
+    body = {
+        "model": os.environ.get("CHAT_MODEL", "gpt-4.1-mini"),
+        "response_format": {"type": "json_object"},
+        "temperature": 0,
+        "messages": [
+            {"role": "system", "content": (
+                "З рецепта витягни ВСІ інгредієнти. Відповідь — JSON "
+                '{"servings": число, "ingredients": [{"name": "...", "amount": число або null, "unit": "г|кг|мл|л|шт|"}]}. '
+                "name — коротка назва продукту українською в називному відмінку однини (напр. «сіль», «кунжут»). "
+                "Не вигадуй кількостей: якщо в тексті немає — amount null. Без води. Кожен продукт один раз (склади кількості)."
+            )},
+            {"role": "user", "content": guardrails.redact(text)},
+        ],
+    }
+    r = requests.post("https://api.openai.com/v1/chat/completions", json=body,
+                      headers={"Authorization": f"Bearer {key}"}, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+    guardrails.record_usage(data.get("usage", {}).get("total_tokens", 0))
+    parsed = json.loads(data["choices"][0]["message"]["content"])
+    return int(parsed.get("servings") or 1), [i for i in parsed.get("ingredients", []) if i.get("name")]
+
+
+def _build_draft(title: str, text: str) -> dict:
+    servings, items = _extract_ingredients(text)
+    units = _grocy_units()
+    lines = []
+    for it in items:
+        amount, unit = it.get("amount"), (it.get("unit") or "").strip()
+        found = _grocy_match(it["name"], strict=True)
+        line = {"name": it["name"], "amount": amount, "unit": unit, "product": None, "qty": None, "note": ""}
+        if found:
+            p = found[0]
+            line["product"] = p
+            stock_unit = units.get(p["qu_id_stock"], "")
+            if not amount:
+                line["note"] = "кількість не вказана — пропущено"
+            else:
+                qty = _convert(float(amount), unit or stock_unit, stock_unit)
+                if qty is None:
+                    line["note"] = f"одиниці не сходяться ({_fmt_amount(amount)} {unit} проти {stock_unit}) — пропущено"
+                else:
+                    line["qty"] = qty
+        else:
+            line["note"] = "нового продукту в Grocy немає — створю без запасу" if amount else "продукту в Grocy немає, кількості немає — пропущено"
+        lines.append(line)
+    return {"title": title, "servings": servings, "lines": lines}
+
+
+def _draft_text(d: dict) -> str:
+    out = [f"Чернетка рецепта «{d['title']}» для Grocy ({d['servings']} порц.):"]
+    for l in d["lines"]:
+        amt = f"{_fmt_amount(l['amount'])} {l['unit']}".strip() if l["amount"] else "?"
+        prod = f" → {l['product']['name']}" if l["product"] else ""
+        note = f" ({l['note']})" if l["note"] else ""
+        out.append(f"- {l['name']}: {amt}{prod}{note}")
+    out.append("Записати в Grocy? Відповідь «так» — запишу; або скажіть, що виправити.")
+    return "\n".join(out)
+
+
+def tool_grocy_recipe_import(args: dict, user_text: str = "") -> str:
+    name = (args.get("recipe") or "").strip()
+    if args.get("confirm"):
+        d = _pending_recipe["draft"]
+        if not (_fresh_recipe_draft() and d and _CONFIRM_RE.search(user_text)):
+            return "НЕ ЗМІНЕНО. Немає підтвердженої чернетки: спершу покажу чернетку, а ви підтвердите."
+        return _write_draft(d)
+    rec, err = _tandoor_recipe(name)
+    if err:
+        return "НЕ ЗМІНЕНО. " + err
+    if any(r["name"].lower() == rec["title"].lower() for r in grocy_client.objects("recipes")):
+        return f"НЕ ЗМІНЕНО. Рецепт «{rec['title']}» уже є в Grocy."
+    d = _build_draft(rec["title"], rec["text"])
+    if not any(l["amount"] for l in d["lines"]):
+        return f"НЕ ЗМІНЕНО. У тексті «{rec['title']}» немає інгредієнтів з кількостями — переносити нічого."
+    _pending_recipe.update(draft=d, at=time.time())
+    return _draft_text(d)
+
+
+def _write_draft(d: dict) -> str:
+    units = {u["name"].lower(): u["id"] for u in grocy_client.objects("quantity_units")}
+    loc = next((l["id"] for l in grocy_client.objects("locations") if l["name"] == "Кухня"), 1)
+    grp = next((g["id"] for g in grocy_client.objects("product_groups") if g["name"] == "Продукти"), None)
+    rid = grocy_client.create("recipes", {"name": d["title"], "type": "normal", "base_servings": d["servings"],
+                                          "description": "З Tandoor (перенесено агентом)"})
+    written, created = 0, 0
+    for l in d["lines"]:
+        if l["product"] is None and l["amount"]:
+            unit_id = units.get(l["unit"].lower()) or units.get("шт") or units.get("piece")
+            data = {"name": l["name"], "location_id": loc, "qu_id_stock": unit_id, "qu_id_purchase": unit_id,
+                    "qu_id_consume": unit_id, "qu_id_price": unit_id, "description": "Створено при імпорті рецепта"}
+            if grp:
+                data["product_group_id"] = grp
+            pid = grocy_client.create("products", data)
+            l["product"] = {"id": pid, "qu_id_stock": unit_id}
+            l["qty"] = float(l["amount"])
+            created += 1
+        if l["product"] is not None and l["qty"]:
+            grocy_client.create("recipes_pos", {"recipe_id": rid, "product_id": l["product"]["id"],
+                                                "amount": l["qty"], "qu_id": l["product"]["qu_id_stock"]})
+            written += 1
+    _pending_recipe.update(draft=None)
+    return f"Створено рецепт «{d['title']}» у Grocy: {written} інгредієнтів, нових продуктів {created}."
+
+
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
@@ -1183,6 +1354,7 @@ DISPATCH = {
     "grocy_stock": tool_grocy_stock,
     "grocy_shopping_list": tool_grocy_shopping_list,
     "grocy_recipes": tool_grocy_recipes,
+    "grocy_recipe_import": tool_grocy_recipe_import,
     "grocy_recipe_consume": tool_grocy_recipe_consume,
     "grocy_recipe_shopping": tool_grocy_recipe_shopping,
     "grocy_consume": tool_grocy_consume,
@@ -1202,7 +1374,7 @@ def call_tool(name: str, arguments_json: str, user_text: str = "") -> str:
     if not handler:
         return f"Невідомий інструмент: {name}"
     try:
-        if name in ("qbittorrent_add", "toloka_add"):
+        if name in ("qbittorrent_add", "toloka_add", "grocy_recipe_import"):
             return handler(args, user_text)
         return handler(args)
     except Exception as e:
