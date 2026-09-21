@@ -103,7 +103,7 @@ QUESTIONS = [
     ("energy", "скільки 18.09 числа пралка використала електроенергії?", {"get_sensor_history"}, lambda a: energy is not None and energy in a.replace(",", ".")),
     ("tv", "коли востаннє було вімкнено телевізор?", {"get_sensor_history"}, lambda a: any(t in a for t in tv_times)),
     ("recipe", "порадь щось із куркою на вечерю", {"search_knowledge"}, lambda a: "курк" in a.lower()),
-    ("toloka", "знайди Mandy 2018 на толоці", {"toloka_search", "jellyfin_find"}, lambda a: "Толоці" in a and "Mandy" in a or "Менді" in a),
+    ("toloka", "знайди Mandy 2018 на толоці", {"toloka_search", "jellyfin_search"}, lambda a: "Толоці" in a and "Mandy" in a or "Менді" in a),
     ("tarantino", "хочу подивитись якийсь фільм Тарантіно, запропонуй", None, lambda a: bool(re.search(TARANTINO, a, re.I)) and "Темпл" not in a and "Інтерстеллар" not in a),
     ("general", "хто зняв фільм Кримінальне чтиво і в якому році він вийшов?", None, lambda a: "тарантіно" in a.lower() and "1994" in a),
 ]
@@ -127,6 +127,7 @@ for qid, text, tool_ok, check in [q for q in QUESTIONS if not ONLY or q[0] in ON
     try:
         if ENGINE == "adk":
             answer = LOOP.run_until_complete(ADK.run(f"eval-{qid}-{time.time_ns()}", text))[0]
+            CALLS[:] = ADK.last_calls  # includes MCP tools, which never pass through tools.call_tool
         else:
             answer = main.run_agent(msgs, off, text)
     except Stop:

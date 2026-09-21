@@ -1,5 +1,7 @@
 # ADR-0022: Jellyfin playback control tool; optional hosted chat model
 
+> Superseded by ADR-0038 (керування тепер через jellyfin-mcp з ворітьми в `adk_agent.py`).
+
 - **Status**: accepted
 - **Date**: 2026-09-19
 

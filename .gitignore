@@ -2,3 +2,4 @@
 __pycache__/
 *.pyc
 api/data/
+api/bin/

@@ -1,0 +1,22 @@
+diff --git a/internal/jellyfin/client.go b/internal/jellyfin/client.go
+index cc5e162..0f70c0d 100644
+--- a/internal/jellyfin/client.go
++++ b/internal/jellyfin/client.go
+@@ -67,7 +67,7 @@ func (c *JellyfinClient) DoRequest(ctx context.Context, method, endpoint string,
+ 	if err != nil {
+ 		return nil, fmt.Errorf("creating request: %w", err)
+ 	}
+-	req.Header.Set("X-MediaBrowser-Token", c.apiKey)
++	req.Header.Set("Authorization", "MediaBrowser Token=\""+c.apiKey+"\"")
+ 	req.Header.Set("Accept", "application/json")
+ 	if body != nil {
+ 		req.Header.Set("Content-Type", "application/json")
+@@ -141,7 +141,7 @@ func (c *JellyfinClient) PostRaw(ctx context.Context, endpoint string, params ur
+ 	if err != nil {
+ 		return fmt.Errorf("creating request: %w", err)
+ 	}
+-	req.Header.Set("X-MediaBrowser-Token", c.apiKey)
++	req.Header.Set("Authorization", "MediaBrowser Token=\""+c.apiKey+"\"")
+ 	req.Header.Set("Content-Type", contentType)
+ 
+ 	resp, err := c.httpClient.Do(req)

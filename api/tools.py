@@ -23,7 +23,6 @@ import requests
 import guardrails
 import grocy_client
 import ha_client
-import jellyfin_client
 import qbit_client
 import toloka_client
 import users
@@ -113,46 +112,6 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "play_on_jellyfin_device",
-            "description": (
-                "ЗАПУСТИТИ відтворення фільму чи серіалу з Jellyfin на пристрої Kodi. "
-                "Для серіалу запускає наступний непереглянутий епізод. Викликай ЛИШЕ "
-                "коли користувач явно просить увімкнути/запустити/включити фільм чи серіал."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string", "description": "Назва фільму чи серіалу, напр. 'Декстер'"},
-                },
-                "required": ["title"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "control_jellyfin_playback",
-            "description": (
-                "Керувати тим, що ЗАРАЗ грає на Kodi: пауза, продовжити, зупинити, "
-                "наступна серія, попередня серія. Для запуску нового фільму/серіалу "
-                "за назвою є play_on_jellyfin_device."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["pause", "resume", "stop", "next", "previous"],
-                        "description": "pause — пауза, resume — продовжити, stop — зупинити, next/previous — наступна/попередня серія",
-                    },
-                },
-                "required": ["action"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "qbittorrent_status",
             "description": (
                 "Загальний стан qBittorrent користувача (вже доданих торрентів): скільки віддано і завантажено за сесію та "
@@ -187,22 +146,6 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "jellyfin_find",
-            "description": (
-                "ТОЧНИЙ пошук за назвою в бібліотеці Jellyfin користувача: чи є там цей фільм/серіал. "
-                "Повертає лише справжні збіги назви (не схожі фільми). Викликай першим, коли користувач "
-                "просить знайти фільм/серіал або питає, чи він є."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {"title": {"type": "string", "description": "Назва фільму чи серіалу"}},
-                "required": ["title"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "grocy_stock",
             "description": (
                 "Що є в домашніх запасах (Grocy: їжа і господарські товари): скільки чогось, де лежить. "
@@ -227,17 +170,6 @@ TOOLS = [
                 "type": "object",
                 "properties": {"query": {"type": "string", "description": "Частина назви рецепта; порожньо — усі"}},
             },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "jellyfin_now_playing",
-            "description": (
-                "Що зараз відтворюється на Kodi/Jellyfin і скільки залишилось до кінця: назва, позиція, "
-                "залишок, о котрій закінчиться, чи на паузі. Для 'що зараз грає', 'скільки залишилось до кінця фільму/серії'."
-            ),
-            "parameters": {"type": "object", "properties": {}},
         },
     },
     {
@@ -522,16 +454,14 @@ def tool_get_sensor_history(args: dict) -> str:
 # in testing: the 3B model called the play tool on "що є з Декстера?" and
 # "порадь серіал на вечір" (ADR-0021). Deliberately a code gate, not a
 # model decision.
-CONTROL_TOOLS = {"play_on_jellyfin_device", "control_jellyfin_playback", "qbittorrent_add", "toloka_add",
+CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
                  "grocy_consume", "grocy_add_stock", "grocy_shopping_add",
-                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "note_add", "jellyfin_mark_watched"}
+                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "note_add"}
 
 # Answered verbatim, without a second model call (ADR-0024).
 # Administration stays with the admin (ADR-0035); everything else is shared.
 ADMIN_TOOLS = {"qbittorrent_status", "qbittorrent_list", "qbittorrent_add", "toloka_search", "toloka_add"}
 PASSTHROUGH_TOOLS = {"toloka_search", "grocy_recipe_import"}
-_MARK_WATCHED_RE = re.compile(r"(познач|відміт|проставл|проставт|проставити|галочк|зніми\s+(позначк|мітк|галочк))", re.IGNORECASE)
-_UNMARK_RE = re.compile(r"(зніми|скасуй|прибери|не\s+(переглянут|дивив|бачив))", re.IGNORECASE)
 _COMMAND_RE = re.compile(
     r"(включ|увімкн|ввімкн|запуст|постав|відтвор|\bplay\b|пауз|продовж|зупин|стоп|наступн|попередн|далі|пропуст|\bnext\b|\bstop\b|\bpause\b)",
     re.IGNORECASE,
@@ -589,12 +519,17 @@ def _rs() -> dict:
 
 # HA drops a conversation after a few idle minutes and the next short reply
 # ("Ранч") then arrives with no history; remember that a Tandoor→Grocy import
-# is in progress so that reply is routed to it, not to jellyfin_find (ADR-0033).
+# is in progress so that reply is routed to it, not to a film search (ADR-0033).
 _IMPORT_CTX_TTL = 60 * 60
 
 
 def _fresh_import_ctx() -> bool:
     return time.time() - _rs()["ctx_at"] < _IMPORT_CTX_TTL
+
+
+def in_recipe_import(text: str) -> bool:
+    """A recipe import is under way and the reply is short: a bare dish name, not a film title."""
+    return _fresh_import_ctx() and len((text or "").split()) <= 4
 
 
 def _fresh_recipe_draft() -> bool:
@@ -705,24 +640,6 @@ _GROCY_MISSING_SCHEMA = {
     },
 }
 
-_MARK_WATCHED_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "jellyfin_mark_watched",
-        "description": (
-            "Позначити фільм чи серіал у Jellyfin переглянутим (watched=true) або зняти позначку (watched=false). "
-            "Лише за прямим проханням позначити/відмітити/проставити. Для серіалу позначаються всі серії."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "Назва фільму чи серіалу, як сказав користувач; для «цей фільм»/«те, що зараз грає» — порожній рядок"},
-                "watched": {"type": "boolean", "description": "true — переглянуто (за замовчуванням), false — зняти позначку"},
-            },
-            "required": [],
-        },
-    },
-}
 
 
 _GROCY_IMPORT_SCHEMA = {
@@ -776,12 +693,10 @@ def tools_for(user_text: str) -> list[dict]:
     if _GROCY_IMPORT_RE.search(text) or in_import or (_fresh_recipe_draft() and _CONFIRM_RE.search(text)):
         tools = tools + [_GROCY_IMPORT_SCHEMA, _GROCY_MISSING_SCHEMA]
     if in_import:  # a bare dish name mid-import is not a film title or a torrent
-        tools = [x for x in tools if x["function"]["name"] not in ("jellyfin_find", "toloka_search")]
+        tools = [x for x in tools if x["function"]["name"] not in ("toloka_search",)]
     for name, (desc, gate) in _GROCY_RECIPE_SCHEMAS.items():
         if gate.search(text):
             tools = tools + [_grocy_recipe_schema(name, desc)]
-    if _MARK_WATCHED_RE.search(text):
-        tools = tools + [_MARK_WATCHED_SCHEMA]
     if _WEB_RE.search(text) and web_search_available():
         tools = tools + [_web_search_schema()]
     # Adding from Toloka works only on a variant the user was just shown.
@@ -795,93 +710,17 @@ def tools_for(user_text: str) -> list[dict]:
 
 # The only device this tool may ever start playback on — a state-changing
 # tool gets an allowlist, not "any session" (ADR-0021).
-_PLAY_DEVICE_MARKER = "kodi"
-_SESSION_WAIT_SECONDS = 60
 
 
-def _find_play_session() -> dict | None:
-    for sess in jellyfin_client.sessions():
-        label = f"{sess.get('DeviceName', '')} {sess.get('Client', '')}".lower()
-        if _PLAY_DEVICE_MARKER in label and sess.get("SupportsRemoteControl"):
-            return sess
-    return None
 
 
-def _pick_title(term: str) -> dict | None:
-    items = jellyfin_client.search(term)
-    if not items:
-        return None
-    term_l = term.lower()
-    for item in items:  # prefer a name that starts with the search term
-        if item["Name"].lower().startswith(term_l):
-            return item
-    return items[0]
 
 
-def tool_play_on_jellyfin_device(args: dict, dry_run: bool = False) -> str:
-    title = args.get("title", "").strip()
-    if not title:
-        return "Не вказано, що запускати."
-    item = _pick_title(title)
-    if not item:
-        return f"У Jellyfin не знайдено '{title}'."
-
-    if item["Type"] == "Series":
-        episode = jellyfin_client.next_episode(item["Id"])
-        if not episode:
-            return f"У серіалі '{item['Name']}' немає епізодів."
-        play_id = episode["Id"]
-        what = f"{item['Name']}: сезон {episode.get('ParentIndexNumber', '?')} серія {episode.get('IndexNumber', '?')}"
-    else:
-        play_id, what = item["Id"], item["Name"]
-
-    # Kodi may still be booting after its power outlet was switched on:
-    # wait for its Jellyfin session instead of failing at once.
-    deadline = time.monotonic() + (0 if dry_run else _SESSION_WAIT_SECONDS)
-    while True:
-        sess = _find_play_session()
-        if sess or time.monotonic() >= deadline:
-            break
-        time.sleep(3)
-    if not sess:
-        return "Kodi зараз не в мережі (сесії Jellyfin немає) — спершу увімкни телевізор."
-
-    if dry_run:
-        return f"[dry-run] запустив би '{what}' на {sess['DeviceName']}."
-    jellyfin_client.play(sess["Id"], play_id)
-    return f"Запущено '{what}' на {sess['DeviceName']}."
 
 
 _PLAYSTATE = {"pause": "Pause", "resume": "Unpause", "stop": "Stop"}
 
 
-def tool_control_jellyfin_playback(args: dict) -> str:
-    action = args.get("action", "")
-    sess = _find_play_session()
-    if not sess:
-        return "Kodi зараз не в мережі (сесії Jellyfin немає)."
-    playing = sess.get("NowPlayingItem")
-    if not playing:
-        return "На Kodi зараз нічого не грає."
-
-    if action in _PLAYSTATE:
-        jellyfin_client.playstate(sess["Id"], _PLAYSTATE[action])
-        done = {"pause": "Поставлено на паузу", "resume": "Продовжено", "stop": "Зупинено"}[action]
-        return f"{done}: {playing.get('SeriesName') or playing.get('Name')}."
-
-    if action in ("next", "previous"):
-        if playing.get("Type") != "Episode" or not playing.get("SeriesId"):
-            return "Зараз грає не серіал — наступної чи попередньої серії немає."
-        step = 1 if action == "next" else -1
-        ep = jellyfin_client.adjacent_episode(
-            playing["SeriesId"], playing["ParentIndexNumber"], playing["IndexNumber"], step
-        )
-        if not ep:
-            return "Це " + ("остання" if step == 1 else "перша") + " серія серіалу."
-        jellyfin_client.play(sess["Id"], ep["Id"])
-        return f"Запущено: {playing['SeriesName']}, сезон {ep['ParentIndexNumber']} серія {ep['IndexNumber']} «{ep['Name']}»."
-
-    return f"Невідома дія '{action}'."
 
 
 def _gib(n: float) -> str:
@@ -1113,19 +952,6 @@ def tool_web_search(args: dict) -> str:
     return "\n".join(texts) + ("\n\nДжерела: " + ", ".join(sources[:3]) if sources else "")
 
 
-def tool_jellyfin_find(args: dict) -> str:
-    # Semantic search returns the nearest film, never "nothing" — it offered
-    # "Ураган (1999)" for "Ідеальний шторм" and the model called it the same
-    # film. Jellyfin's own name search only returns real name matches (ADR-0029).
-    title = args.get("title", "").strip()
-    if not title:
-        return "Не вказано назву."
-    items = jellyfin_client.search(title)
-    if not items:
-        return (f"У бібліотеці Jellyfin немає «{title}» (збігів за назвою нема; схожі за змістом фільми "
-                "не вважаються збігом).")
-    lines = [f"«{i['Name']}» ({i.get('ProductionYear', '?')}, {'серіал' if i['Type'] == 'Series' else 'фільм'})" for i in items[:5]]
-    return "У бібліотеці Jellyfin є: " + "; ".join(lines) + "."
 
 
 def _grocy_units() -> dict[int, str]:
@@ -1492,82 +1318,20 @@ def tool_notes_search(args: dict) -> str:
     return "\n".join(f"{r['at']}: {r['text']}" for r in rows[-15:])
 
 
-def _dur(ticks: int) -> str:
-    total = int(ticks / 10_000_000)  # Jellyfin ticks are 100 ns
-    h, rem = divmod(total, 3600)
-    m, sec = divmod(rem, 60)
-    return f"{h} год {m} хв" if h else f"{m} хв {sec} с" if m < 5 else f"{m} хв"
 
 
-def tool_jellyfin_now_playing(args: dict) -> str:
-    playing = [s for s in jellyfin_client.sessions() if s.get("NowPlayingItem")]
-    if not playing:
-        return "Зараз нічого не відтворюється."
-    playing.sort(key=lambda s: _PLAY_DEVICE_MARKER not in f"{s.get('DeviceName', '')} {s.get('Client', '')}".lower())
-    lines = []
-    for s in playing[:3]:
-        item, st = s["NowPlayingItem"], s.get("PlayState") or {}
-        title = item.get("Name", "?")
-        if item.get("SeriesName"):
-            title = f"{item['SeriesName']}: {title}"
-        total, pos = item.get("RunTimeTicks"), st.get("PositionTicks")
-        line = f"{s.get('DeviceName', '?')}: «{title}»"
-        if total and pos is not None:
-            left = max(total - pos, 0)
-            line += f", пройшло {_dur(pos)} з {_dur(total)}, залишилось {_dur(left)}"
-            if st.get("IsPaused"):
-                line += " (на паузі)"
-            else:
-                end = datetime.datetime.now(_TZ) + datetime.timedelta(seconds=left / 10_000_000)
-                line += f", закінчиться близько {end:%H:%M}"
-        lines.append(line)
-    return "\n".join(lines)
 
 
-def tool_jellyfin_mark_watched(args: dict, user_text: str = "") -> str:
-    title = (args.get("title") or "").strip()
-    # The model may guess the direction; the user's own words decide it.
-    watched = not _UNMARK_RE.search(user_text) if user_text else args.get("watched", True) is not False
-    if not title or title.lower() in ("цей", "цей фільм", "цю серію", "поточний", "те що зараз грає", "що зараз грає"):
-        # "mark this one": whatever is playing right now
-        now = [s for s in jellyfin_client.sessions() if s.get("NowPlayingItem")]
-        if not now:
-            return "НЕ ЗМІНЕНО. Зараз нічого не відтворюється, назви фільм."
-        item = now[0]["NowPlayingItem"]
-        jellyfin_client.set_played(item["Id"], watched)
-        if bool((jellyfin_client.get_item(item["Id"]).get("UserData") or {}).get("Played")) != watched:
-            return f"НЕ ЗМІНЕНО. Jellyfin не підтвердив зміну для «{item['Name']}»."
-        return f"Позначено {'переглянутим' if watched else 'непереглянутим'}: «{item['Name']}»."
-    items = jellyfin_client.search(title)
-    exact = [i for i in items if i["Name"].lower() == title.lower()]
-    starts = [i for i in items if i["Name"].lower().startswith(title.lower())]
-    pool = exact or starts
-    if not pool:
-        return f"НЕ ЗМІНЕНО. У бібліотеці Jellyfin немає «{title}»."
-    if len(pool) > 1:  # several plausible titles: never guess which one to mark
-        return "НЕ ЗМІНЕНО. Уточни, який саме: " + "; ".join(f"{i['Name']} ({i.get('ProductionYear', '?')})" for i in pool[:5]) + "."
-    item = pool[0]
-    jellyfin_client.set_played(item["Id"], watched)
-    now = (jellyfin_client.get_item(item["Id"]).get("UserData") or {}).get("Played")
-    if bool(now) != watched:
-        return f"НЕ ЗМІНЕНО. Jellyfin не підтвердив зміну для «{item['Name']}»."
-    extra = " (усі серії)" if item.get("Type") == "Series" else ""
-    return f"Позначено {'переглянутим' if watched else 'непереглянутим'}: «{item['Name']}»{extra}."
 
 
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
     "get_sensor_history": tool_get_sensor_history,
-    "play_on_jellyfin_device": tool_play_on_jellyfin_device,
-    "control_jellyfin_playback": tool_control_jellyfin_playback,
     "qbittorrent_status": tool_qbittorrent_status,
     "qbittorrent_list": tool_qbittorrent_list,
     "qbittorrent_add": tool_qbittorrent_add,
     "toloka_search": tool_toloka_search,
-    "jellyfin_find": tool_jellyfin_find,
-    "jellyfin_now_playing": tool_jellyfin_now_playing,
-    "jellyfin_mark_watched": tool_jellyfin_mark_watched,
     "note_add": tool_note_add,
     "notes_search": tool_notes_search,
     "grocy_stock": tool_grocy_stock,
@@ -1596,7 +1360,7 @@ def call_tool(name: str, arguments_json: str, user_text: str = "") -> str:
     if name in ADMIN_TOOLS and not users.is_admin():
         return "НЕ ЗМІНЕНО. Ця дія доступна лише адміністратору."
     try:
-        if name in ("qbittorrent_add", "toloka_add", "grocy_recipe_import", "jellyfin_mark_watched"):
+        if name in ("qbittorrent_add", "toloka_add", "grocy_recipe_import"):
             return handler(args, user_text)
         return handler(args)
     except Exception as e:

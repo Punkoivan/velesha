@@ -53,10 +53,18 @@ CHAT_REASONING = os.environ.get("CHAT_REASONING") or None
 
 
 _CONTROL_LINES = {
-    "play_on_jellyfin_device": "- play_on_jellyfin_device: запустити фільм/серіал за назвою на Kodi\n",
-    "control_jellyfin_playback": (
-        "- control_jellyfin_playback: керувати тим, що зараз грає на Kodi — пауза, продовжити, "
-        "зупинити, наступна/попередня серія (НЕ передавай це як назву фільму)\n"
+    "jellyfin_play": (
+        "- jellyfin_play: запустити на сесії Kodi: спершу jellyfin_sessions(list) → session_id Kodi; "
+        "jellyfin_search → id фільму; для серіалу jellyfin_tv_shows (next unplayed) → id серії. "
+        "Немає сесії Kodi (вимкнений) — так і скажи\n"
+    ),
+    "jellyfin_playback_control": (
+        "- jellyfin_playback_control: пауза (Pause), продовжити (Unpause), зупинити (Stop), "
+        "NextTrack/PreviousTrack, Seek, гучність — для сесії Kodi з jellyfin_sessions\n"
+    ),
+    "jellyfin_user_data": (
+        "- jellyfin_user_data: позначити переглянутим (mark_played) або зняти позначку (mark_unplayed) "
+        "за id з jellyfin_search; «цей фільм» = те, що зараз грає в jellyfin_sessions\n"
     ),
     "grocy_consume": "- grocy_consume: списати використане зі запасів (кількість в одиницях продукту у Grocy)\n",
     "grocy_recipe_consume": "- grocy_recipe_consume: рецепт з Grocy приготовано — списати інгредієнти\n",
@@ -64,7 +72,6 @@ _CONTROL_LINES = {
     "grocy_recipe_import": "- grocy_recipe_import: перенести рецепт з Tandoor у Grocy (чернетка → підтвердження користувача → confirm=true)\n",
     "grocy_recipes_not_imported": "- grocy_recipes_not_imported: точний перелік рецептів Tandoor, яких ще немає в Grocy\n",
     "note_add": "- note_add: записати особисту нотатку користувача; notes_search — знайти його нотатки (чужих не бачиш)\n",
-    "jellyfin_mark_watched": "- jellyfin_mark_watched: позначити фільм/серіал переглянутим (або зняти позначку)\n",
     "grocy_add_stock": "- grocy_add_stock: додати куплене до запасів\n",
     "grocy_shopping_add": "- grocy_shopping_add: додати продукт до списку покупок\n",
     "web_search": "- web_search: пошук в інтернеті (свіже, новини, нові фільми) — коли користувач просить пошукати в інтернеті\n",
@@ -98,8 +105,11 @@ def system_prompt(offered: set[str]) -> str:
         "- search_knowledge: рецепти (Tandoor) і Jellyfin (що дивився, поради); знімок історії HA може бути застарілим\n"
         "- grocy_stock / grocy_shopping_list: домашні запаси (їжа, господарські товари) і список покупок у Grocy\n"
         "- grocy_recipes: рецепти, заведені в Grocy, і чи вистачає для них запасів (пошук рецептів за змістом — search_knowledge)\n"
-        "- jellyfin_now_playing: що зараз грає на Kodi і скільки залишилось до кінця\n"
-        "- jellyfin_find: чи Є фільм/серіал у бібліотеці Jellyfin за назвою (точний пошук)\n"
+        "- jellyfin_search: чи Є фільм/серіал у бібліотеці Jellyfin за назвою (точний пошук); "
+        "jellyfin_browse (за жанром, роком, студією, актором, «переглянуто»), jellyfin_tv_shows (сезони, серії, "
+        "наступна непереглянута), jellyfin_people, jellyfin_recommendations, jellyfin_get_item, jellyfin_analytics\n"
+        "- jellyfin_sessions: що зараз відтворюється на Kodi; у відповіді вже є порахований кодом «Залишок» — "
+        "переказуй його, сам не рахуй\n"
         "- get_live_state: ПОТОЧНЕ значення будь-якого пристрою, сенсора чи лічильника "
         "(відчинені двері, температура, скільки запитів заблокував AdGuard зараз) — "
         "не для минулих подій 'коли востаннє' і не для підрахунку за конкретну дату\n"
@@ -113,7 +123,7 @@ def system_prompt(offered: set[str]) -> str:
         + "".join(line for name, line in _CONTROL_LINES.items() if name in offered)
         + "\n"
         "Знайти фільм/серіал (\"знайди X\", \"є X?\", \"хочу подивитись X\"): спершу перевір бібліотеку Jellyfin "
-        "інструментом jellyfin_find; якщо його відповідь «немає» — шукай на Толоці (toloka_search). Схожий фільм "
+        "інструментом jellyfin_search; якщо його відповідь «немає» — шукай на Толоці (toloka_search). Схожий фільм "
         "НІКОЛИ не видавай за шуканий. Питання про вже додані торренти (ratio, віддача, що качається) — qbittorrent_*, "
         "а не пошук нового.\n"
         "Інструменти — для даних користувача (дім, файли, торренти, рецепти). На загальні питання "
@@ -122,6 +132,12 @@ def system_prompt(offered: set[str]) -> str:
     )
 
 app = FastAPI(title="Velesha API")
+
+
+@app.on_event("shutdown")
+async def _shutdown():
+    if _engine is not None:
+        await _engine.close()
 
 
 class ChatMessage(BaseModel):
@@ -334,7 +350,7 @@ async def chat_completions(req: ChatCompletionRequest, authorization: str | None
             }, ensure_ascii=False) + "\n")
     last_user = next((m.content or "" for m in reversed(req.messages) if m.role == "user"), "")
 
-    if os.environ.get("AGENT_ENGINE", "legacy") == "adk":
+    if os.environ.get("AGENT_ENGINE", "adk") == "adk":
         answer, acted, _ = await _adk_engine().run(caller, last_user)
         answer = unfounded_claim(answer, acted)
     else:

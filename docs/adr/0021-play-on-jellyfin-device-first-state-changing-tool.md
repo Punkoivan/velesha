@@ -1,5 +1,7 @@
 # ADR-0021: `play_on_jellyfin_device` — the first state-changing tool, gated in code
 
+> Superseded by ADR-0038 (власні Jellyfin-інструменти замінено MCP-сервером; allowlist Kodi збережено як `_jellyfin_guard`).
+
 - **Status**: accepted
 - **Date**: 2026-09-19
 

@@ -15,4 +15,5 @@ dependencies = [
     "beautifulsoup4>=4.15.0",
     "google-adk>=2.9.2",
     "litellm>=1.102.0",
+    "mcp>=2.2.0",
 ]

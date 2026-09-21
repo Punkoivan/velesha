@@ -50,6 +50,12 @@ usable via `/api/conversation/process` or HA's Assist pipeline.
   output, Qwen2.5-3B occasionally misreads which line in a list is the
   answer (see ADR-0018's Consequences) — not common, but not zero.
 
+## Jellyfin (MCP)
+
+Jellyfin — через MCP-сервер `jellyfin-mcp` (ADR-0038): бінарник `api/bin/jellyfin-mcp`
+(не в git, збірка і патч для Jellyfin 12.1 — в ADR). Змінна `JELLYFIN_MCP_BIN`
+задає інший шлях. Працює лише з `AGENT_ENGINE=adk` (за замовчуванням).
+
 ## Кілька користувачів
 
 `VELESHA_USERS="ключ1:ivan,ключ2:olha"` і `VELESHA_ADMINS="ivan"` в
