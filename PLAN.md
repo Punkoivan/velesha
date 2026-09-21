@@ -126,6 +126,13 @@ Both sources re-indexed and verified working there.
   in principle phrase a `search_knowledge` query using earlier context,
   but nothing persists once a conversation ends. Deliberately deferred.
 
+- **Власний Grocy MCP-сервер на Go, у опенсорс.** Готові (TypeScript/Python, 80+
+  інструментів, без перевіреного read-only) не беремо: наші Grocy-інструменти мають
+  однозначність збігу, відхилення списання більше за наявне, імпорт рецептів через
+  чернетку. Ціль: один бінарник (як `jellyfin-mcp`), вузький набір інструментів, ті
+  самі ворота як вбудовані. Спершу — оцінка й ADR; також PR у `jellyfin-mcp`
+  (заголовок Authorization для Jellyfin 12.1, `api/jellyfin-mcp-auth-header.patch`).
+
 ## Notes
 
 - Every non-obvious decision gets an ADR in `docs/adr/`, not just a mention
