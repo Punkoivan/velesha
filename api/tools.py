@@ -177,6 +177,28 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_activity_periods",
+            "description": (
+                "ТРИВАЛОСТІ роботи пристрою: кожен цикл/сеанс окремо з початком, кінцем і тривалістю (та кВт·год за цикл, "
+                "якщо є лічильник) — 'скільки тривало останнє прання', 'скільки працювала пралка', 'коли почалось/"
+                "закінчилось'. Не для суми кВт·год за день (це get_sensor_history). За замовчуванням — останні ~10 днів."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entity_name": {"type": "string", "description": "Пристрій, напр. 'пралка'"},
+                    "start_date": {"type": "string", "description": "Початок: YYYY-MM-DD, '18.09', 'вчора', 'тиждень'; порожньо — 10 днів"},
+                    "end_date": {"type": "string", "description": "Кінець (необов'язково)"},
+                    "threshold": {"type": "number", "description": "Поріг активності (для потужності Вт, за замовчуванням 5)"},
+                    "merge_gap_minutes": {"type": "integer", "description": "Паузи коротші за це склеювати в один цикл (за замовчуванням 10)"},
+                },
+                "required": ["entity_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "grocy_shopping_list",
             "description": "Поточний список покупок у Grocy.",
             "parameters": {"type": "object", "properties": {}},
@@ -1430,6 +1452,92 @@ def tool_ha_switch(args: dict) -> str:
     return f"НЕ ЗМІНЕНО. Команду надіслано, але «{name}» не перейшов у стан {state}."
 
 
+def _fmt_dur(minutes: float) -> str:
+    m = int(round(minutes))
+    return f"{m // 60} год {m % 60} хв" if m >= 60 else f"{m} хв"
+
+
+def _series(entity_id: str, start, end) -> list[tuple]:
+    out = []
+    for h in ha_client.get_history(entity_id, start.isoformat(), end.isoformat()):
+        if h.get("state") in (None, "unknown", "unavailable"):
+            continue
+        out.append((max(datetime.datetime.fromisoformat(h["last_changed"]).astimezone(_TZ), start), h["state"]))
+    return out
+
+
+def _value_at(series: list[tuple], t) -> float | None:
+    val = None
+    for ts, v in series:
+        if ts > t:
+            break
+        val = _num(v)
+    return val if val is not None else (_num(series[0][1]) if series else None)
+
+
+def tool_get_activity_periods(args: dict) -> str:
+    """Cycles of activity (power above a threshold, or state 'on') with durations, computed in code (ADR-0040)."""
+    hint = args.get("entity_name", "")
+    entity = resolve_entity(hint, unit="W") or resolve_entity(hint)
+    if not entity:
+        return f"Не знайдено пристрій '{hint}'."
+    name = entity["attributes"].get("friendly_name")
+    now = datetime.datetime.now(_TZ)
+    raw = (args.get("start_date") or "").strip().lower()
+    if not raw or raw in _WEEK_WORDS:
+        first_day = now.date() - datetime.timedelta(days=10)
+    else:
+        first_day = _parse_day(raw)
+        if not first_day:
+            return f"Не вдалось розпізнати дату '{args.get('start_date')}'."
+    last_day = _parse_day(args["end_date"]) if args.get("end_date") else None
+    start = datetime.datetime.combine(first_day, datetime.time.min, tzinfo=_TZ)
+    end = min(datetime.datetime.combine(last_day, datetime.time.min, tzinfo=_TZ) + datetime.timedelta(days=1), now) if last_day else now
+    series = _series(entity["entity_id"], start, end)
+    if not series:
+        return f"Немає даних по '{name}' за цей період (HA зберігає історію ~10 днів)."
+
+    numeric = any(_num(v) is not None for _, v in series)
+    unit = entity["attributes"].get("unit_of_measurement", "")
+    threshold = float(args["threshold"]) if args.get("threshold") is not None else 5.0
+    gap = datetime.timedelta(minutes=int(args["merge_gap_minutes"]) if args.get("merge_gap_minutes") is not None else (10 if numeric else 2))
+    active = (lambda v: (_num(v) or 0) > threshold) if numeric else (lambda v: v == "on")
+
+    periods = []  # [start, end]
+    for i, (t, v) in enumerate(series):
+        nxt = series[i + 1][0] if i + 1 < len(series) else end
+        if active(v):
+            if periods and t - periods[-1][1] <= gap:
+                periods[-1][1] = nxt
+            else:
+                periods.append([t, nxt])
+    if not periods:
+        return f"«{name}» за цей період не було активним (поріг {_fmt(threshold) + ' ' + unit if numeric else 'увімкнено'})."
+
+    energy = resolve_entity(hint, unit="kWh") if numeric else None
+    eseries = _series(energy["entity_id"], start, end) if energy else []
+    ongoing = active(series[-1][1]) and periods[-1][1] >= end - datetime.timedelta(seconds=1)
+
+    def row(p) -> str:
+        minutes = (p[1] - p[0]).total_seconds() / 60
+        line = f"{p[0]:%d.%m %H:%M}–{p[1]:%H:%M}, {_fmt_dur(minutes)}"
+        if eseries:
+            a, b = _value_at(eseries, p[0]), _value_at(eseries, p[1])
+            if a is not None and b is not None and b >= a:
+                line += f", {_fmt(b - a)} кВт·год"
+        return line
+
+    shown = periods[-10:]
+    durs = [(p[1] - p[0]).total_seconds() / 60 for p in periods]
+    lines = [row(p) + (" (триває зараз)" if ongoing and p is periods[-1] else "") for p in shown]
+    rule = f"потужність > {_fmt(threshold)} {unit}" if numeric else "увімкнено"
+    head = (f"{name}: {len(periods)} цикл(ів) ({rule}, паузи до {int(gap.total_seconds() // 60)} хв склеєно), "
+            f"середня тривалість {_fmt_dur(sum(durs) / len(durs))}, найдовший {_fmt_dur(max(durs))}, найкоротший {_fmt_dur(min(durs))}.")
+    last = f"Останній: {row(periods[-1])}" + (" (триває зараз)" if ongoing else "") + "."
+    more = f" Показано останні {len(shown)} з {len(periods)}." if len(periods) > len(shown) else ""
+    return head + "\n" + last + more + "\n" + "\n".join(lines)
+
+
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
@@ -1441,6 +1549,7 @@ DISPATCH = {
     "ha_switch": tool_ha_switch,
     "note_add": tool_note_add,
     "notes_search": tool_notes_search,
+    "get_activity_periods": tool_get_activity_periods,
     "grocy_stock": tool_grocy_stock,
     "grocy_shopping_list": tool_grocy_shopping_list,
     "grocy_recipes": tool_grocy_recipes,

@@ -82,6 +82,8 @@ One search surface across all sources, not per-source scripts.
       зараз грає; явна фраза, однозначний збіг, результат перевіряється читанням.
 - [x] **ADK як рушій** (ADR-0036), **gpt-5.6-luna** (ADR-0037), **Jellyfin через MCP**
       (ADR-0038): власні Jellyfin-інструменти вилучено, ворота Kodi збережено.
+- [x] **Керування пристроями** (`ha_switch`, ADR-0039) і **тривалості циклів**
+      (`get_activity_periods`, ADR-0040).
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar

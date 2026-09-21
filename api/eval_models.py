@@ -101,6 +101,7 @@ QUESTIONS = [
     ("session", "скільки віддано в qBittorrent за сесію?", {"qbittorrent_status"}, lambda a: any(abs(float(x.replace(",", ".")) - session_gb) < 1.5 for x in re.findall(r"\d+[.,]?\d*", a))),
     ("adguard", "скільки запитів пройшло через AdGuard вчора?", {"get_sensor_history"}, lambda a: adguard is not None and adguard in a.replace(" ", "")),
     ("energy", "скільки 18.09 числа пралка використала електроенергії?", {"get_sensor_history"}, lambda a: energy is not None and energy in a.replace(",", ".")),
+    ("cycle", "скільки тривало останнє прання?", {"get_activity_periods"}, lambda a: bool(re.search(r"\d+\s*(хв|год)", a))),
     ("tv", "коли востаннє було вімкнено телевізор?", {"get_sensor_history"}, lambda a: any(t in a for t in tv_times)),
     ("recipe", "порадь щось із куркою на вечерю", {"search_knowledge"}, lambda a: "курк" in a.lower()),
     ("toloka", "знайди Mandy 2018 на толоці", {"toloka_search", "jellyfin_search"}, lambda a: "Толоці" in a and "Mandy" in a or "Менді" in a),
