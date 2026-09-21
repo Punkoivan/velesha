@@ -21,7 +21,6 @@ import zoneinfo
 import requests
 
 import guardrails
-import threading
 import grocy_client
 import ha_client
 import jellyfin_client
@@ -673,17 +672,19 @@ _HA_SWITCH_SCHEMA = {
         "name": "ha_switch",
         "description": (
             "Увімкнути або вимкнути пристрій (розетку/перемикач) зі списку дозволених, напр. телевізор. "
-            "when=after_playback: вимкнути, коли закінчиться відтворення на Kodi (лише для off). "
-            "Лише за прямим проханням увімкнути/вимкнути."
+            "when=now (за замовчуванням): зараз. when=after_playback: вимкнути, коли закінчиться фільм на Kodi "
+            "(агент бере залишок з Jellyfin і ставить таймер HA). when=in_minutes + minutes: вимкнути через N хвилин. "
+            "when=status: що заплановано. when=cancel: скасувати таймер. Лише за прямим проханням."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "device": {"type": "string", "description": "Назва пристрою, як сказав користувач (напр. «телевізор»)"},
                 "state": {"type": "string", "enum": ["on", "off"]},
-                "when": {"type": "string", "enum": ["now", "after_playback"], "description": "now (за замовчуванням) або after_playback"},
+                "when": {"type": "string", "enum": ["now", "after_playback", "in_minutes", "status", "cancel"]},
+                "minutes": {"type": "integer", "description": "Для in_minutes: через скільки хвилин"},
             },
-            "required": ["device", "state"],
+            "required": ["device"],
         },
     },
 }
@@ -1394,56 +1395,77 @@ def _match_allowed(hint: str, allowed: dict[str, str]) -> str | None:
     return None
 
 
-_watchers: dict[str, threading.Thread] = {}
-_WATCH_MAX_SECONDS = 5 * 3600
-_WATCH_POLL_SECONDS = 20
+def _timer_for(eid: str) -> str | None:
+    """HA timer helper that switches this device off: HA_TIMER_MAP="switch.tv=timer.tv_off" (ADR-0041)."""
+    pairs = os.environ.get("HA_TIMER_MAP", "switch.tv=timer.tv_off").split(",")
+    return dict(p.strip().split("=", 1) for p in pairs if "=" in p).get(eid)
 
 
-def _kodi_playing() -> bool:
+def _kodi_remaining_seconds() -> tuple[int, bool, str] | None:
+    """(seconds left, paused, title) of what plays on Kodi now, else None."""
     for sess in jellyfin_client.sessions():
         label = f"{sess.get('DeviceName', '')} {sess.get('Client', '')}".lower()
-        if "kodi" in label and sess.get("NowPlayingItem"):
-            return True
-    return False
+        item, st = sess.get("NowPlayingItem"), sess.get("PlayState") or {}
+        if "kodi" in label and item and item.get("RunTimeTicks") and st.get("PositionTicks") is not None:
+            return (max(item["RunTimeTicks"] - st["PositionTicks"], 0) // 10_000_000, bool(st.get("IsPaused")), item.get("Name", "?"))
+    return None
 
 
-def _watch_and_switch_off(entity_id: str, name: str) -> None:
-    deadline = time.time() + _WATCH_MAX_SECONDS
-    gone = 0
-    while time.time() < deadline:
-        time.sleep(_WATCH_POLL_SECONDS)
-        try:
-            gone = 0 if _kodi_playing() else gone + 1
-            if gone >= 2:  # not playing for two polls in a row: the film ended (a short blip must not switch it off)
-                ha_client.call_service("switch", "turn_off", entity_id)
-                print(f"WATCH switched off {entity_id}", flush=True)
-                break
-        except Exception as e:  # noqa: BLE001
-            print(f"WATCH error {type(e).__name__}", flush=True)
-    _watchers.pop(entity_id, None)
+def _hms(seconds: int) -> str:
+    return f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
+
+
+def _timer_status(timer_id: str, name: str) -> str:
+    st = ha_client.get_state(timer_id)
+    if st["state"] == "idle":
+        return f"Таймер вимкнення «{name}» не запущено."
+    fin = st["attributes"].get("finishes_at")
+    when = datetime.datetime.fromisoformat(fin).astimezone(_TZ) if fin else None
+    left = f", вимкну о {when:%H:%M}" if when else ""
+    return f"Таймер вимкнення «{name}» {'на паузі' if st['state'] == 'paused' else 'іде'}{left}."
 
 
 def tool_ha_switch(args: dict) -> str:
     allowed = _control_allowed()
     hint, state, when = (args.get("device") or "").strip(), args.get("state"), args.get("when") or "now"
-    if state not in ("on", "off"):
-        return "НЕ ЗМІНЕНО. Вкажи, увімкнути чи вимкнути."
     eid = _match_allowed(hint, allowed)
     if not eid:
         return (f"НЕ ЗМІНЕНО. «{hint}» немає в списку пристроїв, якими мені дозволено керувати"
                 + (f" (дозволено: {', '.join(allowed.values())})." if allowed else "."))
     name = allowed[eid]
-    if when == "after_playback":
-        if state != "off":
+    if when in ("after_playback", "in_minutes", "status", "cancel"):
+        timer = _timer_for(eid)
+        if not timer:
+            return f"НЕ ЗМІНЕНО. Для «{name}» не налаштовано таймер вимкнення (HA_TIMER_MAP)."
+        if when == "status":
+            return _timer_status(timer, name)
+        if when == "cancel":
+            ha_client.call_service("timer", "cancel", timer)
+            return f"Скасовано: таймер вимкнення «{name}»."
+        if state == "on":
             return "НЕ ЗМІНЕНО. Відкладати можна лише вимкнення."
-        if not _kodi_playing():
-            return "НЕ ЗМІНЕНО. Зараз на Kodi нічого не грає, тож нема чого чекати. Вимкнути одразу?"
-        if eid in _watchers and _watchers[eid].is_alive():
-            return f"Заплановано: «{name}» уже вимкну, коли закінчиться відтворення на Kodi."
-        th = threading.Thread(target=_watch_and_switch_off, args=(eid, name), daemon=True)
-        _watchers[eid] = th
-        th.start()
-        return f"Заплановано: вимкну «{name}», коли закінчиться відтворення на Kodi (чекатиму до 5 годин)."
+        if when == "after_playback":
+            info = _kodi_remaining_seconds()
+            if not info:
+                return "НЕ ЗМІНЕНО. Зараз на Kodi нічого не грає, тож нема чого чекати. Вимкнути одразу?"
+            seconds, paused, title = info
+            seconds += 60  # position reports lag by seconds; do not cut the last scene
+            note = f" Фільм зараз на паузі: таймер не чекатиме, перепостав, коли продовжиш." if paused else ""
+            what = f"коли закінчиться «{title}»"
+        else:
+            minutes = args.get("minutes")
+            if not isinstance(minutes, int) or not 1 <= minutes <= 720:
+                return "НЕ ЗМІНЕНО. Вкажи, через скільки хвилин (1–720)."
+            seconds, note, what = minutes * 60, "", f"через {minutes} хв"
+        ha_client.call_service("timer", "start", timer, duration=_hms(seconds))
+        st = ha_client.get_state(timer)
+        if st["state"] != "active":
+            return f"НЕ ЗМІНЕНО. Таймер «{name}» не запустився."
+        fin = st["attributes"].get("finishes_at")  # HA's own clock: the timer runs there, our machine's clock may drift
+        end = datetime.datetime.fromisoformat(fin).astimezone(_TZ) if fin else datetime.datetime.now(_TZ) + datetime.timedelta(seconds=seconds)
+        return f"Заплановано: вимкну «{name}» {what}, близько {end:%H:%M}.{note}"
+    if state not in ("on", "off"):
+        return "НЕ ЗМІНЕНО. Вкажи, увімкнути чи вимкнути."
     ha_client.call_service("switch", "turn_on" if state == "on" else "turn_off", eid)
     for _ in range(6):  # the state follows the command a moment later
         time.sleep(0.5)

@@ -1,0 +1,14 @@
+# HA: вимкнути телевізор, коли спливе таймер timer.tv_off (ADR-0041).
+# Створити: Налаштування → Автоматизації → Створити → ⋮ → Редагувати в YAML → вставити.
+alias: Вимкнути телевізор за таймером
+description: Агент Велеша ставить timer.tv_off (за часом або «коли закінчиться фільм»)
+mode: single
+triggers:
+  - trigger: event
+    event_type: timer.finished
+    event_data:
+      entity_id: timer.tv_off
+actions:
+  - action: switch.turn_off
+    target:
+      entity_id: switch.tv

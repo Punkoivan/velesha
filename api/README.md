@@ -54,7 +54,9 @@ usable via `/api/conversation/process` or HA's Assist pipeline.
 
 `ha_switch` вмикає/вимикає лише пристрої зі списку `HA_CONTROL_ALLOW`
 (за замовчуванням `switch.tv`; через кому, ADR-0039). Холодильник, духовка,
-чайник та інше недоступні, доки їх не додано явно.
+чайник та інше недоступні, доки їх не додано явно. Відкладене вимкнення («коли закінчиться
+фільм», «через N хвилин») ставить таймер HA `timer.tv_off` (`HA_TIMER_MAP`), а вимикає його
+автоматизація з `docs/ha/tv-off-automation.yaml` (ADR-0041).
 
 ## Jellyfin (MCP)
 
