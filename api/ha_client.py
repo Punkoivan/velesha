@@ -42,3 +42,14 @@ def get_history(entity_id: str, start_iso: str, end_iso: str) -> list[dict]:
     r.raise_for_status()
     data = r.json()
     return data[0] if data else []
+
+
+def call_service(domain: str, service: str, entity_id: str) -> None:
+    r = _session.post(f"{HA_URL}/api/services/{domain}/{service}", json={"entity_id": entity_id}, timeout=15)
+    r.raise_for_status()
+
+
+def get_state(entity_id: str) -> dict:
+    r = _session.get(f"{HA_URL}/api/states/{entity_id}", timeout=15)
+    r.raise_for_status()
+    return r.json()

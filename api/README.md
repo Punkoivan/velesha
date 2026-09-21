@@ -50,6 +50,12 @@ usable via `/api/conversation/process` or HA's Assist pipeline.
   output, Qwen2.5-3B occasionally misreads which line in a list is the
   answer (see ADR-0018's Consequences) — not common, but not zero.
 
+## Керування пристроями
+
+`ha_switch` вмикає/вимикає лише пристрої зі списку `HA_CONTROL_ALLOW`
+(за замовчуванням `switch.tv`; через кому, ADR-0039). Холодильник, духовка,
+чайник та інше недоступні, доки їх не додано явно.
+
 ## Jellyfin (MCP)
 
 Jellyfin — через MCP-сервер `jellyfin-mcp` (ADR-0038): бінарник `api/bin/jellyfin-mcp`

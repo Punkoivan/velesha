@@ -21,8 +21,10 @@ import zoneinfo
 import requests
 
 import guardrails
+import threading
 import grocy_client
 import ha_client
+import jellyfin_client
 import qbit_client
 import toloka_client
 import users
@@ -456,12 +458,13 @@ def tool_get_sensor_history(args: dict) -> str:
 # model decision.
 CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
                  "grocy_consume", "grocy_add_stock", "grocy_shopping_add",
-                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "note_add"}
+                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "note_add", "ha_switch"}
 
 # Answered verbatim, without a second model call (ADR-0024).
 # Administration stays with the admin (ADR-0035); everything else is shared.
 ADMIN_TOOLS = {"qbittorrent_status", "qbittorrent_list", "qbittorrent_add", "toloka_search", "toloka_add"}
 PASSTHROUGH_TOOLS = {"toloka_search", "grocy_recipe_import"}
+_POWER_RE = re.compile(r"(вимкн|вимик|виключ|погас|увімкн|ввімкн|включ|вруб|запал)", re.IGNORECASE)
 _COMMAND_RE = re.compile(
     r"(включ|увімкн|ввімкн|запуст|постав|відтвор|\bplay\b|пауз|продовж|зупин|стоп|наступн|попередн|далі|пропуст|\bnext\b|\bstop\b|\bpause\b)",
     re.IGNORECASE,
@@ -642,6 +645,28 @@ _GROCY_MISSING_SCHEMA = {
 
 
 
+_HA_SWITCH_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "ha_switch",
+        "description": (
+            "Увімкнути або вимкнути пристрій (розетку/перемикач) зі списку дозволених, напр. телевізор. "
+            "when=after_playback: вимкнути, коли закінчиться відтворення на Kodi (лише для off). "
+            "Лише за прямим проханням увімкнути/вимкнути."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "device": {"type": "string", "description": "Назва пристрою, як сказав користувач (напр. «телевізор»)"},
+                "state": {"type": "string", "enum": ["on", "off"]},
+                "when": {"type": "string", "enum": ["now", "after_playback"], "description": "now (за замовчуванням) або after_playback"},
+            },
+            "required": ["device", "state"],
+        },
+    },
+}
+
+
 _GROCY_IMPORT_SCHEMA = {
     "type": "function",
     "function": {
@@ -697,6 +722,8 @@ def tools_for(user_text: str) -> list[dict]:
     for name, (desc, gate) in _GROCY_RECIPE_SCHEMAS.items():
         if gate.search(text):
             tools = tools + [_grocy_recipe_schema(name, desc)]
+    if _POWER_RE.search(text):
+        tools = tools + [_HA_SWITCH_SCHEMA]
     if _WEB_RE.search(text) and web_search_available():
         tools = tools + [_web_search_schema()]
     # Adding from Toloka works only on a variant the user was just shown.
@@ -1324,6 +1351,85 @@ def tool_notes_search(args: dict) -> str:
 
 
 
+# Only devices named here can be switched by the agent: the same HA has the
+# fridge, oven and kettle as switches too (ADR-0039). Extend via HA_CONTROL_ALLOW.
+def _control_allowed() -> dict[str, str]:
+    ids = [e.strip() for e in os.environ.get("HA_CONTROL_ALLOW", "switch.tv").split(",") if e.strip()]
+    names = {}
+    for st in ha_client.get_states():
+        if st["entity_id"] in ids:
+            names[st["entity_id"]] = st.get("attributes", {}).get("friendly_name") or st["entity_id"]
+    return names
+
+
+def _match_allowed(hint: str, allowed: dict[str, str]) -> str | None:
+    q = hint.lower().strip()
+    for eid, name in allowed.items():
+        words = name.lower().split()
+        if q == name.lower() or any(w.startswith(qt) or difflib.SequenceMatcher(None, qt, w).ratio() > 0.8
+                                    for qt in q.split() for w in words):
+            return eid
+    return None
+
+
+_watchers: dict[str, threading.Thread] = {}
+_WATCH_MAX_SECONDS = 5 * 3600
+_WATCH_POLL_SECONDS = 20
+
+
+def _kodi_playing() -> bool:
+    for sess in jellyfin_client.sessions():
+        label = f"{sess.get('DeviceName', '')} {sess.get('Client', '')}".lower()
+        if "kodi" in label and sess.get("NowPlayingItem"):
+            return True
+    return False
+
+
+def _watch_and_switch_off(entity_id: str, name: str) -> None:
+    deadline = time.time() + _WATCH_MAX_SECONDS
+    gone = 0
+    while time.time() < deadline:
+        time.sleep(_WATCH_POLL_SECONDS)
+        try:
+            gone = 0 if _kodi_playing() else gone + 1
+            if gone >= 2:  # not playing for two polls in a row: the film ended (a short blip must not switch it off)
+                ha_client.call_service("switch", "turn_off", entity_id)
+                print(f"WATCH switched off {entity_id}", flush=True)
+                break
+        except Exception as e:  # noqa: BLE001
+            print(f"WATCH error {type(e).__name__}", flush=True)
+    _watchers.pop(entity_id, None)
+
+
+def tool_ha_switch(args: dict) -> str:
+    allowed = _control_allowed()
+    hint, state, when = (args.get("device") or "").strip(), args.get("state"), args.get("when") or "now"
+    if state not in ("on", "off"):
+        return "НЕ ЗМІНЕНО. Вкажи, увімкнути чи вимкнути."
+    eid = _match_allowed(hint, allowed)
+    if not eid:
+        return (f"НЕ ЗМІНЕНО. «{hint}» немає в списку пристроїв, якими мені дозволено керувати"
+                + (f" (дозволено: {', '.join(allowed.values())})." if allowed else "."))
+    name = allowed[eid]
+    if when == "after_playback":
+        if state != "off":
+            return "НЕ ЗМІНЕНО. Відкладати можна лише вимкнення."
+        if not _kodi_playing():
+            return "НЕ ЗМІНЕНО. Зараз на Kodi нічого не грає, тож нема чого чекати. Вимкнути одразу?"
+        if eid in _watchers and _watchers[eid].is_alive():
+            return f"Заплановано: «{name}» уже вимкну, коли закінчиться відтворення на Kodi."
+        th = threading.Thread(target=_watch_and_switch_off, args=(eid, name), daemon=True)
+        _watchers[eid] = th
+        th.start()
+        return f"Заплановано: вимкну «{name}», коли закінчиться відтворення на Kodi (чекатиму до 5 годин)."
+    ha_client.call_service("switch", "turn_on" if state == "on" else "turn_off", eid)
+    for _ in range(6):  # the state follows the command a moment later
+        time.sleep(0.5)
+        if ha_client.get_state(eid)["state"] == state:
+            return f"{'Увімкнено' if state == 'on' else 'Вимкнено'}: «{name}»."
+    return f"НЕ ЗМІНЕНО. Команду надіслано, але «{name}» не перейшов у стан {state}."
+
+
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
@@ -1332,6 +1438,7 @@ DISPATCH = {
     "qbittorrent_list": tool_qbittorrent_list,
     "qbittorrent_add": tool_qbittorrent_add,
     "toloka_search": tool_toloka_search,
+    "ha_switch": tool_ha_switch,
     "note_add": tool_note_add,
     "notes_search": tool_notes_search,
     "grocy_stock": tool_grocy_stock,
