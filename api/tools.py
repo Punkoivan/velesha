@@ -524,12 +524,14 @@ def tool_get_sensor_history(args: dict) -> str:
 # model decision.
 CONTROL_TOOLS = {"play_on_jellyfin_device", "control_jellyfin_playback", "qbittorrent_add", "toloka_add",
                  "grocy_consume", "grocy_add_stock", "grocy_shopping_add",
-                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "note_add"}
+                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "note_add", "jellyfin_mark_watched"}
 
 # Answered verbatim, without a second model call (ADR-0024).
 # Administration stays with the admin (ADR-0035); everything else is shared.
 ADMIN_TOOLS = {"qbittorrent_status", "qbittorrent_list", "qbittorrent_add", "toloka_search", "toloka_add"}
 PASSTHROUGH_TOOLS = {"toloka_search", "grocy_recipe_import"}
+_MARK_WATCHED_RE = re.compile(r"(познач|відміт|проставл|проставт|проставити|галочк|зніми\s+(позначк|мітк|галочк))", re.IGNORECASE)
+_UNMARK_RE = re.compile(r"(зніми|скасуй|прибери|не\s+(переглянут|дивив|бачив))", re.IGNORECASE)
 _COMMAND_RE = re.compile(
     r"(включ|увімкн|ввімкн|запуст|постав|відтвор|\bplay\b|пауз|продовж|зупин|стоп|наступн|попередн|далі|пропуст|\bnext\b|\bstop\b|\bpause\b)",
     re.IGNORECASE,
@@ -703,6 +705,26 @@ _GROCY_MISSING_SCHEMA = {
     },
 }
 
+_MARK_WATCHED_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "jellyfin_mark_watched",
+        "description": (
+            "Позначити фільм чи серіал у Jellyfin переглянутим (watched=true) або зняти позначку (watched=false). "
+            "Лише за прямим проханням позначити/відмітити/проставити. Для серіалу позначаються всі серії."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Назва фільму чи серіалу, як сказав користувач; для «цей фільм»/«те, що зараз грає» — порожній рядок"},
+                "watched": {"type": "boolean", "description": "true — переглянуто (за замовчуванням), false — зняти позначку"},
+            },
+            "required": [],
+        },
+    },
+}
+
+
 _GROCY_IMPORT_SCHEMA = {
     "type": "function",
     "function": {
@@ -758,6 +780,8 @@ def tools_for(user_text: str) -> list[dict]:
     for name, (desc, gate) in _GROCY_RECIPE_SCHEMAS.items():
         if gate.search(text):
             tools = tools + [_grocy_recipe_schema(name, desc)]
+    if _MARK_WATCHED_RE.search(text):
+        tools = tools + [_MARK_WATCHED_SCHEMA]
     if _WEB_RE.search(text) and web_search_available():
         tools = tools + [_web_search_schema()]
     # Adding from Toloka works only on a variant the user was just shown.
@@ -1500,6 +1524,37 @@ def tool_jellyfin_now_playing(args: dict) -> str:
     return "\n".join(lines)
 
 
+def tool_jellyfin_mark_watched(args: dict, user_text: str = "") -> str:
+    title = (args.get("title") or "").strip()
+    # The model may guess the direction; the user's own words decide it.
+    watched = not _UNMARK_RE.search(user_text) if user_text else args.get("watched", True) is not False
+    if not title or title.lower() in ("цей", "цей фільм", "цю серію", "поточний", "те що зараз грає", "що зараз грає"):
+        # "mark this one": whatever is playing right now
+        now = [s for s in jellyfin_client.sessions() if s.get("NowPlayingItem")]
+        if not now:
+            return "НЕ ЗМІНЕНО. Зараз нічого не відтворюється, назви фільм."
+        item = now[0]["NowPlayingItem"]
+        jellyfin_client.set_played(item["Id"], watched)
+        if bool((jellyfin_client.get_item(item["Id"]).get("UserData") or {}).get("Played")) != watched:
+            return f"НЕ ЗМІНЕНО. Jellyfin не підтвердив зміну для «{item['Name']}»."
+        return f"Позначено {'переглянутим' if watched else 'непереглянутим'}: «{item['Name']}»."
+    items = jellyfin_client.search(title)
+    exact = [i for i in items if i["Name"].lower() == title.lower()]
+    starts = [i for i in items if i["Name"].lower().startswith(title.lower())]
+    pool = exact or starts
+    if not pool:
+        return f"НЕ ЗМІНЕНО. У бібліотеці Jellyfin немає «{title}»."
+    if len(pool) > 1:  # several plausible titles: never guess which one to mark
+        return "НЕ ЗМІНЕНО. Уточни, який саме: " + "; ".join(f"{i['Name']} ({i.get('ProductionYear', '?')})" for i in pool[:5]) + "."
+    item = pool[0]
+    jellyfin_client.set_played(item["Id"], watched)
+    now = (jellyfin_client.get_item(item["Id"]).get("UserData") or {}).get("Played")
+    if bool(now) != watched:
+        return f"НЕ ЗМІНЕНО. Jellyfin не підтвердив зміну для «{item['Name']}»."
+    extra = " (усі серії)" if item.get("Type") == "Series" else ""
+    return f"Позначено {'переглянутим' if watched else 'непереглянутим'}: «{item['Name']}»{extra}."
+
+
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
@@ -1512,6 +1567,7 @@ DISPATCH = {
     "toloka_search": tool_toloka_search,
     "jellyfin_find": tool_jellyfin_find,
     "jellyfin_now_playing": tool_jellyfin_now_playing,
+    "jellyfin_mark_watched": tool_jellyfin_mark_watched,
     "note_add": tool_note_add,
     "notes_search": tool_notes_search,
     "grocy_stock": tool_grocy_stock,
@@ -1540,7 +1596,7 @@ def call_tool(name: str, arguments_json: str, user_text: str = "") -> str:
     if name in ADMIN_TOOLS and not users.is_admin():
         return "НЕ ЗМІНЕНО. Ця дія доступна лише адміністратору."
     try:
-        if name in ("qbittorrent_add", "toloka_add", "grocy_recipe_import"):
+        if name in ("qbittorrent_add", "toloka_add", "grocy_recipe_import", "jellyfin_mark_watched"):
             return handler(args, user_text)
         return handler(args)
     except Exception as e:

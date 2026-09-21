@@ -78,6 +78,8 @@ One search surface across all sources, not per-source scripts.
       ключ API = особа, адмін-інструменти, окремі нотатки й пам'ять.
 - [x] **Що зараз грає / залишок до кінця** (`jellyfin_now_playing`): читає сесію
       Kodi у Jellyfin, залишок і час завершення рахуються в коді.
+- [x] **Позначити переглянутим** (`jellyfin_mark_watched`): фільм/серіал або те, що
+      зараз грає; явна фраза, однозначний збіг, результат перевіряється читанням.
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar
