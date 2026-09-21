@@ -486,6 +486,7 @@ CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
 ADMIN_TOOLS = {"qbittorrent_status", "qbittorrent_list", "qbittorrent_add", "toloka_search", "toloka_add"}
 PASSTHROUGH_TOOLS = {"toloka_search", "grocy_recipe_import"}
 _POWER_RE = re.compile(r"(вимкн|вимик|виключ|погас|увімкн|ввімкн|включ|вруб|запал)", re.IGNORECASE)
+_TIMER_RE = re.compile(r"(таймер|заплан|скасу|відміни|відмін)", re.IGNORECASE)
 _COMMAND_RE = re.compile(
     r"(включ|увімкн|ввімкн|запуст|постав|відтвор|\bplay\b|пауз|продовж|зупин|стоп|наступн|попередн|далі|пропуст|\bnext\b|\bstop\b|\bpause\b)",
     re.IGNORECASE,
@@ -745,7 +746,7 @@ def tools_for(user_text: str) -> list[dict]:
     for name, (desc, gate) in _GROCY_RECIPE_SCHEMAS.items():
         if gate.search(text):
             tools = tools + [_grocy_recipe_schema(name, desc)]
-    if _POWER_RE.search(text):
+    if _POWER_RE.search(text) or _TIMER_RE.search(text):
         tools = tools + [_HA_SWITCH_SCHEMA]
     if _WEB_RE.search(text) and web_search_available():
         tools = tools + [_web_search_schema()]
@@ -1425,7 +1426,7 @@ def _timer_status(timer_id: str, name: str) -> str:
     return f"Таймер вимкнення «{name}» {'на паузі' if st['state'] == 'paused' else 'іде'}{left}."
 
 
-def tool_ha_switch(args: dict) -> str:
+def tool_ha_switch(args: dict, user_text: str = "") -> str:
     allowed = _control_allowed()
     hint, state, when = (args.get("device") or "").strip(), args.get("state"), args.get("when") or "now"
     eid = _match_allowed(hint, allowed)
@@ -1433,6 +1434,15 @@ def tool_ha_switch(args: dict) -> str:
         return (f"НЕ ЗМІНЕНО. «{hint}» немає в списку пристроїв, якими мені дозволено керувати"
                 + (f" (дозволено: {', '.join(allowed.values())})." if allowed else "."))
     name = allowed[eid]
+    # The tool is offered on timer words too, so re-check what the user actually asked for:
+    # switching (now / scheduling) needs a power verb or a timer word; status and cancel need a timer word.
+    if user_text:
+        need = _TIMER_RE if when in ("status", "cancel") else None
+        ok = bool(_TIMER_RE.search(user_text)) if need else bool(_POWER_RE.search(user_text) or _TIMER_RE.search(user_text))
+        if when == "now" and not _POWER_RE.search(user_text):
+            ok = False
+        if not ok:
+            return "НЕ ЗМІНЕНО. Це не схоже на пряме прохання; уточни, що зробити."
     if when in ("after_playback", "in_minutes", "status", "cancel"):
         timer = _timer_for(eid)
         if not timer:
@@ -1598,7 +1608,7 @@ def call_tool(name: str, arguments_json: str, user_text: str = "") -> str:
     if name in ADMIN_TOOLS and not users.is_admin():
         return "НЕ ЗМІНЕНО. Ця дія доступна лише адміністратору."
     try:
-        if name in ("qbittorrent_add", "toloka_add", "grocy_recipe_import"):
+        if name in ("qbittorrent_add", "toloka_add", "grocy_recipe_import", "ha_switch"):
             return handler(args, user_text)
         return handler(args)
     except Exception as e:
