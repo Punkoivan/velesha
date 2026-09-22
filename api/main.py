@@ -71,6 +71,10 @@ _CONTROL_LINES = {
     "grocy_recipe_shopping": "- grocy_recipe_shopping: додати до списку покупок нестачу для рецепта з Grocy\n",
     "grocy_recipe_import": "- grocy_recipe_import: перенести рецепт з Tandoor у Grocy (чернетка → підтвердження користувача → confirm=true)\n",
     "grocy_recipes_not_imported": "- grocy_recipes_not_imported: точний перелік рецептів Tandoor, яких ще немає в Grocy\n",
+    "remind_me": (
+        "- remind_me: разове нагадування, надішле пуш о вказаному часі (time \'19\' чи \'19:30\', або "
+        "in_minutes); get_reminders — список запланованих\n"
+    ),
     "ha_switch": "- ha_switch: увімкнути/вимкнути пристрій (розетку, лампу тощо) — спробуй викликати навіть якщо не певен, чи він у дозволеному списку, інструмент сам скаже, якщо ні; «вимкни, коли закінчиться фільм» = when=after_playback, «через N хвилин» = when=in_minutes, «що заплановано» = status, «скасуй» = cancel (ставить таймер HA)\n",
     "note_add": "- note_add: записати особисту нотатку користувача; notes_search — знайти його нотатки (чужих не бачиш)\n",
     "grocy_add_stock": "- grocy_add_stock: додати куплене до запасів\n",

@@ -242,6 +242,36 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "remind_me",
+            "description": (
+                "Поставити разове нагадування — надішле пуш-сповіщення на телефон у вказаний час. "
+                "Вкажи time (година, напр. '19' чи '19:30') і, якщо треба, date ('сьогодні'/'завтра'/YYYY-MM-DD, "
+                "за замовчуванням сьогодні, а якщо цей час уже минув — завтра); або in_minutes замість time/date "
+                "для 'через N хвилин'. Лише за прямим проханням нагадати."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Що нагадати, як сказав користувач"},
+                    "time": {"type": "string", "description": "Година, напр. '19' або '19:30'"},
+                    "date": {"type": "string", "description": "'сьогодні', 'завтра' або YYYY-MM-DD"},
+                    "in_minutes": {"type": "integer", "description": "Альтернатива time/date: через скільки хвилин (1–10080)"},
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_reminders",
+            "description": "Список запланованих нагадувань (найближчі 14 днів).",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "grocy_shopping_list",
             "description": "Поточний список покупок у Grocy.",
             "parameters": {"type": "object", "properties": {}},
@@ -523,7 +553,7 @@ def tool_get_sensor_history(args: dict) -> str:
 # model decision.
 CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
                  "grocy_consume", "grocy_add_stock", "grocy_shopping_add",
-                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "note_add", "ha_switch", "log_watched_movie"}
+                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "note_add", "ha_switch", "log_watched_movie", "remind_me"}
 
 # Answered verbatim, without a second model call (ADR-0024).
 # Administration stays with the admin (ADR-0035); everything else is shared.
@@ -605,6 +635,8 @@ def _fresh_recipe_draft() -> bool:
     return _rs()["draft"] is not None and time.time() - _rs()["at"] < _PENDING_TTL
 
 _LOG_MOVIE_RE = re.compile(r"(оцін|подивив|подивилас|подивилис|переглянут|рецензі|відгук|додай.*(перегляд|фільм))", re.IGNORECASE)
+_REMIND_RE = re.compile(r"нагад", re.IGNORECASE)
+_CLOCK_RE = re.compile(r"^(\d{1,2})[:.]?(\d{2})?$")
 _SEARCH_TTL = 30 * 60
 _last_search: dict = {"at": 0.0, "rows": []}
 # A variant the user already picked whose category is still missing. The agent
@@ -796,6 +828,8 @@ def tools_for(user_text: str) -> list[dict]:
             tools = tools + [_grocy_recipe_schema(name, desc)]
     if _POWER_RE.search(text) or _TIMER_RE.search(text):
         tools = tools + [_HA_SWITCH_SCHEMA]
+    if _REMIND_RE.search(text):
+        tools = tools + [_remind_me_schema(), _get_reminders_schema()]
     if _WEB_RE.search(text) and web_search_available():
         tools = tools + [_web_search_schema()]
     # Adding from Toloka works only on a variant the user was just shown.
@@ -1697,6 +1731,142 @@ def tool_get_watched_movies(args: dict) -> str:
     return "\n".join(f"{r['title']} ({r['year'] or '?'}){' — реж. ' + r['director'] if r.get('director') else ''}: {r['rating']}/10" + (f" — {r['review']}" if r["review"] else "") for r in rows)
 
 
+# One calendar per user (ADR-0044): "default" (single-user mode, ADR-0035) keeps the
+# calendar already created by hand; any other user gets one auto-provisioned on first
+# use via HA's config-flow API, and the mapping is cached so we never create it twice.
+_REMINDER_CAL_FILE = pathlib.Path(__file__).parent / "data" / "reminder_calendars.json"
+_REMINDER_CAL_DEFAULT = os.environ.get("REMINDER_CALENDAR", "calendar.nagaduvannia")
+
+
+def _reminder_calendar_map() -> dict:
+    if _REMINDER_CAL_FILE.exists():
+        return json.loads(_REMINDER_CAL_FILE.read_text())
+    return {}
+
+
+def _save_reminder_calendar_map(m: dict) -> None:
+    _REMINDER_CAL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _REMINDER_CAL_FILE.write_text(json.dumps(m, ensure_ascii=False))
+
+
+def _reminder_calendar_for(user: str) -> tuple[str, bool]:
+    """(entity_id, just_created) — just_created means the automation for it still needs setting up."""
+    if user == "default":
+        return _REMINDER_CAL_DEFAULT, False
+    if override := os.environ.get(f"REMINDER_CALENDAR_{user.upper()}"):
+        return override, False
+    cached = _reminder_calendar_map()
+    if user in cached:
+        return cached[user], False
+    title = f"Нагадування {user}"
+    states = ha_client.get_states()
+    existing = next((s["entity_id"] for s in states
+                     if s["entity_id"].startswith("calendar.") and s["attributes"].get("friendly_name") == title), None)
+    if existing:  # a previous attempt created the calendar but crashed before caching it — reuse, don't duplicate
+        cached[user] = existing
+        _save_reminder_calendar_map(cached)
+        return existing, True
+    before = {s["entity_id"] for s in states}
+    r = ha_client._session.post(f"{ha_client.HA_URL}/api/config/config_entries/flow",
+                                json={"handler": "local_calendar", "show_advanced_options": False}, timeout=15)
+    r.raise_for_status()
+    flow = r.json()
+    r2 = ha_client._session.post(f"{ha_client.HA_URL}/api/config/config_entries/flow/{flow['flow_id']}",
+                                 json={"calendar_name": title}, timeout=15)
+    r2.raise_for_status()
+    # HA's own transliteration of the title decides the entity_id, not ours to guess —
+    # diff the entity list before/after (one retry: registration can lag the config entry by a beat).
+    entity = None
+    for _ in range(20):
+        after = {s["entity_id"] for s in ha_client.get_states()}
+        new_ids = after - before
+        if new_ids:
+            entity = next((e for e in new_ids if e.startswith("calendar.")), None) or new_ids.pop()
+            break
+        time.sleep(0.5)
+    if not entity:
+        raise RuntimeError(f"local_calendar created for {user} but its entity_id never appeared")
+    cached[user] = entity
+    _save_reminder_calendar_map(cached)
+    return entity, True
+
+
+def _remind_me_schema() -> dict:
+    return next(t for t in TOOLS if t["function"]["name"] == "remind_me")
+
+
+def _parse_clock(s: str) -> tuple[int, int] | None:
+    m = _CLOCK_RE.match((s or "").strip())
+    if not m:
+        return None
+    h, mm = int(m[1]), int(m[2]) if m[2] else 0
+    return (h, mm) if 0 <= h <= 23 and 0 <= mm <= 59 else None
+
+
+def _reminder_confirmed(calendar: str, summary: str, when: datetime.datetime) -> bool:
+    events = ha_client.calendar_events(calendar,
+        (when - datetime.timedelta(minutes=2)).isoformat(), (when + datetime.timedelta(minutes=2)).isoformat())
+    return any(e.get("summary") == summary for e in events)
+
+
+def tool_remind_me(args: dict) -> str:
+    text = (args.get("text") or "").strip()
+    if not text:
+        return "НЕ ЗМІНЕНО. Що нагадати?"
+    calendar, just_created = _reminder_calendar_for(users.current())
+    now = datetime.datetime.now(_TZ)
+    minutes = args.get("in_minutes")
+    if minutes is not None:
+        if not isinstance(minutes, int) or not 1 <= minutes <= 10080:
+            return "НЕ ЗМІНЕНО. Вкажи, через скільки хвилин (1–10080)."
+        when = now + datetime.timedelta(minutes=minutes)
+    else:
+        hm = _parse_clock(args.get("time", ""))
+        if not hm:
+            return "НЕ ЗМІНЕНО. Не розпізнав час; вкажи годину, напр. '19' або '19:30', або через скільки хвилин."
+        date_raw = (args.get("date") or "").strip().lower()
+        if date_raw in ("", "сьогодні", "today"):
+            day = now.date()
+        elif date_raw in ("завтра", "tomorrow"):
+            day = now.date() + datetime.timedelta(days=1)
+        else:
+            day = _parse_day(date_raw)
+            if not day:
+                return f"НЕ ЗМІНЕНО. Не розпізнав дату '{args.get('date')}'."
+        when = datetime.datetime.combine(day, datetime.time(*hm), tzinfo=_TZ)
+        if not date_raw and when <= now:  # a bare "о 19" already past today means tomorrow, not silently dropped
+            when += datetime.timedelta(days=1)
+    ha_client.call_service_data("calendar", "create_event", calendar, summary=text,
+        start_date_time=when.strftime("%Y-%m-%d %H:%M:%S"), end_date_time=(when + datetime.timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"))
+    if not _reminder_confirmed(calendar, text, when):
+        return "НЕ ЗМІНЕНО. Команду надіслано, але нагадування не підтвердилось у календарі."
+    note = ""
+    if just_created:
+        notify = os.environ.get(f"REMINDER_NOTIFY_{users.current().upper()}", "notify.mobile_app_<пристрій>")
+        note = (f" (це твій перший раз — попроси адміністратора додати в docs/ha/reminder-notify-automation.yaml "
+                f"рядок для «{calendar}» → {notify}, інакше сповіщення поки не прийде)")
+    return f"Заплановано нагадування: «{text}» {when:%d.%m о %H:%M}.{note}"
+
+
+def _get_reminders_schema() -> dict:
+    return next(t for t in TOOLS if t["function"]["name"] == "get_reminders")
+
+
+def tool_get_reminders(args: dict) -> str:
+    calendar, _ = _reminder_calendar_for(users.current())
+    now = datetime.datetime.now(_TZ)
+    events = ha_client.calendar_events(calendar, now.isoformat(), (now + datetime.timedelta(days=14)).isoformat())
+    if not events:
+        return "Запланованих нагадувань немає."
+    rows = []
+    for e in events:
+        start = e["start"].get("dateTime") or e["start"].get("date")
+        dt = datetime.datetime.fromisoformat(start).astimezone(_TZ) if "T" in start else None
+        rows.append((dt or now, f"{dt:%d.%m %H:%M}: {e['summary']}" if dt else f"{start}: {e['summary']}"))
+    rows.sort(key=lambda r: r[0])
+    return "\n".join(r[1] for r in rows)
+
+
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
@@ -1711,6 +1881,8 @@ DISPATCH = {
     "get_activity_periods": tool_get_activity_periods,
     "log_watched_movie": tool_log_watched_movie,
     "get_watched_movies": tool_get_watched_movies,
+    "remind_me": tool_remind_me,
+    "get_reminders": tool_get_reminders,
     "grocy_stock": tool_grocy_stock,
     "grocy_shopping_list": tool_grocy_shopping_list,
     "grocy_recipes": tool_grocy_recipes,

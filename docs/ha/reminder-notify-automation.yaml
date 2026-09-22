@@ -1,0 +1,25 @@
+# HA: надіслати пуш-сповіщення, коли настає час нагадування (ADR-0044).
+# Створити: Налаштування → Автоматизації → Створити → ⋮ → Редагувати в YAML → вставити.
+# Один календар на користувача (агент Велеша створює новий автоматично при першому
+# зверненні нового користувача, ADR-0044) — додай тут ще один trigger + рядок у мапу,
+# коли з'явиться другий користувач.
+alias: Сповіщення про нагадування Велеші
+description: >
+  Агент Велеша ставить події в календар(і) "Нагадування …";
+  ця автоматизація на початок події шле пуш на телефон власника календаря.
+mode: queued
+triggers:
+  - trigger: calendar
+    event: start
+    entity_id: calendar.nagaduvannia
+    # - trigger: calendar          # приклад додавання другого користувача
+    #   event: start
+    #   entity_id: calendar.nagaduvannia_olha
+actions:
+  - action: >
+      notify.{{ {
+        'calendar.nagaduvannia': 'mobile_app_punkas26',
+      }.get(trigger.entity_id, 'mobile_app_punkas26') }}
+    data:
+      title: Нагадування
+      message: "{{ trigger.calendar_event.summary }}"

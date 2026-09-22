@@ -53,3 +53,15 @@ def get_state(entity_id: str) -> dict:
     r = _session.get(f"{HA_URL}/api/states/{entity_id}", timeout=15)
     r.raise_for_status()
     return r.json()
+
+
+def call_service_data(domain: str, service: str, target: str, **data) -> None:
+    r = _session.post(f"{HA_URL}/api/services/{domain}/{service}",
+                      json={"entity_id": target, **data}, timeout=15)
+    r.raise_for_status()
+
+
+def calendar_events(entity_id: str, start_iso: str, end_iso: str) -> list[dict]:
+    r = _session.get(f"{HA_URL}/api/calendars/{entity_id}", params={"start": start_iso, "end": end_iso}, timeout=15)
+    r.raise_for_status()
+    return r.json()

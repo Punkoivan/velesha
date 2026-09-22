@@ -64,6 +64,13 @@ Jellyfin — через MCP-сервер `jellyfin-mcp` (ADR-0038): бінарн
 (не в git, збірка і патч для Jellyfin 12.1 — в ADR). Змінна `JELLYFIN_MCP_BIN`
 задає інший шлях. Працює лише з `AGENT_ENGINE=adk` (за замовчуванням).
 
+## Нагадування
+
+`remind_me`/`get_reminders` (ADR-0044) — разові нагадування через HA Local
+Calendar, один календар на користувача (авто-створюється при першому
+зверненні). Сповіщення шле окрема автоматизація HA
+(`docs/ha/reminder-notify-automation.yaml`), не наш сервер.
+
 ## Кілька користувачів
 
 `VELESHA_USERS="ключ1:ivan,ключ2:olha"` і `VELESHA_ADMINS="ivan"` в

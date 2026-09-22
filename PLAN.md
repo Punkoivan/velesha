@@ -84,6 +84,8 @@ One search surface across all sources, not per-source scripts.
       (ADR-0038): власні Jellyfin-інструменти вилучено, ворота Kodi збережено.
 - [x] **Керування пристроями** (`ha_switch`, ADR-0039) і **тривалості циклів**
       (`get_activity_periods`, ADR-0040).
+- [x] **Нагадування** (`remind_me`/`get_reminders`, ADR-0044): HA Local Calendar,
+      календар на користувача, сповіщення окремою автоматизацією HA.
 - [ ] CLI tool proper — command name TBD (not `sh`, that's taken; see notes)
 - [ ] Voice input/output
 - [ ] Avatar
