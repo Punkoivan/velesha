@@ -272,6 +272,22 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "cancel_reminder",
+            "description": (
+                "Скасувати активне нагадування за частиною тексту (спершу глянь get_reminders, якщо не певен формулювання). "
+                "Щоб ПЕРЕНЕСТИ/ЗМІНИТИ нагадування — скасуй старе цим інструментом і постав нове через remind_me. "
+                "Лише за прямим проханням скасувати/видалити/прибрати."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "Частина тексту нагадування, як сказав користувач"}},
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "grocy_shopping_list",
             "description": "Поточний список покупок у Grocy.",
             "parameters": {"type": "object", "properties": {}},
@@ -553,7 +569,7 @@ def tool_get_sensor_history(args: dict) -> str:
 # model decision.
 CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
                  "grocy_consume", "grocy_add_stock", "grocy_shopping_add",
-                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "note_add", "ha_switch", "log_watched_movie", "remind_me"}
+                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "note_add", "ha_switch", "log_watched_movie", "remind_me", "cancel_reminder"}
 
 # Answered verbatim, without a second model call (ADR-0024).
 # Administration stays with the admin (ADR-0035); everything else is shared.
@@ -829,7 +845,7 @@ def tools_for(user_text: str) -> list[dict]:
     if _POWER_RE.search(text) or _TIMER_RE.search(text):
         tools = tools + [_HA_SWITCH_SCHEMA]
     if _REMIND_RE.search(text):
-        tools = tools + [_remind_me_schema(), _get_reminders_schema()]
+        tools = tools + [_remind_me_schema(), _get_reminders_schema(), _cancel_reminder_schema()]
     if _WEB_RE.search(text) and web_search_available():
         tools = tools + [_web_search_schema()]
     # Adding from Toloka works only on a variant the user was just shown.
@@ -1858,13 +1874,44 @@ def tool_get_reminders(args: dict) -> str:
     events = ha_client.calendar_events(calendar, now.isoformat(), (now + datetime.timedelta(days=14)).isoformat())
     if not events:
         return "Запланованих нагадувань немає."
-    rows = []
-    for e in events:
+    def sort_key(e):
         start = e["start"].get("dateTime") or e["start"].get("date")
-        dt = datetime.datetime.fromisoformat(start).astimezone(_TZ) if "T" in start else None
-        rows.append((dt or now, f"{dt:%d.%m %H:%M}: {e['summary']}" if dt else f"{start}: {e['summary']}"))
-    rows.sort(key=lambda r: r[0])
-    return "\n".join(r[1] for r in rows)
+        return datetime.datetime.fromisoformat(start).astimezone(_TZ) if "T" in start else now
+    events.sort(key=sort_key)
+    return "\n".join(_fmt_reminder(e) for e in events)
+
+
+def _cancel_reminder_schema() -> dict:
+    return next(t for t in TOOLS if t["function"]["name"] == "cancel_reminder")
+
+
+def _fmt_reminder(e: dict) -> str:
+    start = e["start"].get("dateTime") or e["start"].get("date")
+    dt = datetime.datetime.fromisoformat(start).astimezone(_TZ) if "T" in start else None
+    return f"{dt:%d.%m %H:%M} — {e['summary']}" if dt else f"{start} — {e['summary']}"
+
+
+def tool_cancel_reminder(args: dict, user_text: str = "") -> str:
+    query = (args.get("query") or "").strip()
+    if not query:
+        return "НЕ ЗМІНЕНО. Яке нагадування скасувати?"
+    if user_text and not re.search(r"скасу|видал|прибери|відмін", user_text, re.IGNORECASE):
+        return "НЕ ЗМІНЕНО. Це не схоже на пряме прохання скасувати."
+    calendar, _ = _reminder_calendar_for(users.current())
+    now = datetime.datetime.now(_TZ)
+    events = ha_client.calendar_events(calendar, now.isoformat(), (now + datetime.timedelta(days=14)).isoformat())
+    matches = [e for e in events if query.lower() in e["summary"].lower()]
+    if not matches:
+        return f"НЕ ЗМІНЕНО. Не знайшов активного нагадування зі словом «{query}»."
+    if len(matches) > 1:
+        return "НЕ ЗМІНЕНО. Кілька збігів: " + "; ".join(_fmt_reminder(e) for e in matches) + ". Уточни точніше."
+    e = matches[0]
+    if not ha_client.delete_calendar_event(calendar, e["uid"]):
+        return "НЕ ЗМІНЕНО. Не вдалось скасувати."
+    still = ha_client.calendar_events(calendar, now.isoformat(), (now + datetime.timedelta(days=14)).isoformat())
+    if any(x["uid"] == e["uid"] for x in still):
+        return "НЕ ЗМІНЕНО. Скасування не підтвердилось."
+    return f"Скасовано нагадування: «{e['summary']}»."
 
 
 DISPATCH = {
@@ -1882,6 +1929,7 @@ DISPATCH = {
     "log_watched_movie": tool_log_watched_movie,
     "get_watched_movies": tool_get_watched_movies,
     "remind_me": tool_remind_me,
+    "cancel_reminder": tool_cancel_reminder,
     "get_reminders": tool_get_reminders,
     "grocy_stock": tool_grocy_stock,
     "grocy_shopping_list": tool_grocy_shopping_list,
@@ -1909,7 +1957,7 @@ def call_tool(name: str, arguments_json: str, user_text: str = "") -> str:
     if name in ADMIN_TOOLS and not users.is_admin():
         return "НЕ ЗМІНЕНО. Ця дія доступна лише адміністратору."
     try:
-        if name in ("qbittorrent_add", "toloka_add", "grocy_recipe_import", "ha_switch"):
+        if name in ("qbittorrent_add", "toloka_add", "grocy_recipe_import", "ha_switch", "cancel_reminder"):
             return handler(args, user_text)
         return handler(args)
     except Exception as e:
