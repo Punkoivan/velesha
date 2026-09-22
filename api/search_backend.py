@@ -14,7 +14,7 @@ EMBED_URL = os.environ.get("EMBED_URL", "http://localhost:8083/embedding")
 
 # obsidian_recipes intentionally excluded: recipes migrated to Tandoor,
 # see ADR-0015 — the collection still exists in Qdrant but is stale.
-COLLECTIONS = ["ha_history", "jellyfin_library", "tandoor_recipes"]
+COLLECTIONS = ["ha_history", "jellyfin_library", "tandoor_recipes", "watched_movies"]
 CHUNKS_PER_COLLECTION = 4  # see ADR-0016 — per collection, not a global cap
 CANDIDATE_POOL = 20  # see ADR-0017 — wider semantic net before picking by recency
 MAX_CHUNK_CHARS = 600  # see ADR-0010 — keeps the chat model's context from overflowing

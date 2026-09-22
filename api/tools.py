@@ -22,6 +22,7 @@ import requests
 
 import guardrails
 import grocy_client
+import movies_db
 import ha_client
 import jellyfin_client
 import qbit_client
@@ -50,7 +51,8 @@ TOOLS = [
             "description": (
                 "Семантичний пошук у базі знань Velesha: рецепти (Tandoor), "
                 "знімок історії Home Assistant (може бути застарілим — для 'коли востаннє' краще get_sensor_history), Jellyfin "
-                "(перегляди фільмів/серіалів). НЕ дає живий поточний стан "
+                "(перегляди фільмів/серіалів), особисті оцінки й відгуки на переглянуті фільми "
+                "(watched_movies — для 'порадь щось схоже на X', врахування смаку). НЕ дає живий поточний стан "
                 "пристроїв і не рахує суми/дельти — для цього є інші інструменти."
             ),
             "parameters": {
@@ -59,7 +61,7 @@ TOOLS = [
                     "query": {"type": "string", "description": "Пошуковий запит"},
                     "source": {
                         "type": "string",
-                        "enum": ["ha_history", "jellyfin_library", "tandoor_recipes", "all"],
+                        "enum": ["ha_history", "jellyfin_library", "tandoor_recipes", "watched_movies", "all"],
                         "description": "Обмежити пошук однією колекцією, або 'all' (за замовчуванням)",
                     },
                 },
@@ -192,6 +194,48 @@ TOOLS = [
                     "merge_gap_minutes": {"type": "integer", "description": "Паузи коротші за це склеювати в один цикл (за замовчуванням 10)"},
                 },
                 "required": ["entity_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "log_watched_movie",
+            "description": (
+                "Записати особисту оцінку й відгук на переглянутий фільм/серіал (SQLite + індексація для рекомендацій). "
+                "Файл із Jellyfin згодом видаляється (місце обмежене), тому НЕ прив'язуй запис до jellyfin_id — використовуй "
+                "стійкі дані: title — ОРИГІНАЛЬНА назва (англійська/мовою виробництва, не український дубляж; знаєш сам або "
+                "бери provider_ids з jellyfin_get_item і imdb_id), year, і, якщо можеш визначити, imdb_id та режисера — "
+                "цього досить для однозначної ідентифікації навіть без Jellyfin. Жанри — з jellyfin_get_item, не вигадуй. "
+                "Повторний запис того самого фільму (за imdb_id або назвою+роком) — оновлює оцінку. Лише за прямим проханням "
+                "оцінити/записати."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Оригінальна назва фільму, не локалізована"},
+                    "year": {"type": "integer"},
+                    "imdb_id": {"type": "string", "description": "напр. tt21454134, з provider_ids.Imdb у jellyfin_get_item, якщо відомий"},
+                    "director": {"type": "string", "description": "Режисер, якщо відомий"},
+                    "genres": {"type": "array", "items": {"type": "string"}, "description": "Жанри з метаданих Jellyfin"},
+                    "rating": {"type": "number", "description": "Особиста оцінка 0–10"},
+                    "review": {"type": "string", "description": "Короткий відгук користувача, якщо був"},
+                },
+                "required": ["title", "year", "rating"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_watched_movies",
+            "description": "Історія особистих оцінок переглянутих фільмів (SQLite), фільтр за жанром чи мінімальною оцінкою.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "genre": {"type": "string"},
+                    "min_rating": {"type": "number"},
+                },
             },
         },
     },
@@ -479,7 +523,7 @@ def tool_get_sensor_history(args: dict) -> str:
 # model decision.
 CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
                  "grocy_consume", "grocy_add_stock", "grocy_shopping_add",
-                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "note_add", "ha_switch"}
+                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "note_add", "ha_switch", "log_watched_movie"}
 
 # Answered verbatim, without a second model call (ADR-0024).
 # Administration stays with the admin (ADR-0035); everything else is shared.
@@ -560,6 +604,7 @@ def in_recipe_import(text: str) -> bool:
 def _fresh_recipe_draft() -> bool:
     return _rs()["draft"] is not None and time.time() - _rs()["at"] < _PENDING_TTL
 
+_LOG_MOVIE_RE = re.compile(r"(оцін|подивив|подивилас|подивилис|переглянут|рецензі|відгук|додай.*(перегляд|фільм))", re.IGNORECASE)
 _SEARCH_TTL = 30 * 60
 _last_search: dict = {"at": 0.0, "rows": []}
 # A variant the user already picked whose category is still missing. The agent
@@ -734,6 +779,9 @@ def tools_for(user_text: str) -> list[dict]:
     # Read-only and cheap, so always offered: a word gate looked only at the
     # latest message and lost the request in multi-turn talk (ADR-0029).
     tools = tools + [_toloka_search_schema()]
+    tools = tools + [_get_watched_movies_schema()]
+    if _LOG_MOVIE_RE.search(text):
+        tools = tools + [_log_watched_movie_schema()]
     for name, (desc, gate) in _GROCY_SCHEMAS.items():
         if gate.search(text):  # state-changing: only on an explicit phrase (ADR-0032)
             tools = tools + [_grocy_action_schema(name, desc)]
@@ -1378,7 +1426,7 @@ def tool_notes_search(args: dict) -> str:
 # Only devices named here can be switched by the agent: the same HA has the
 # fridge, oven and kettle as switches too (ADR-0039). Extend via HA_CONTROL_ALLOW.
 def _control_allowed() -> dict[str, str]:
-    ids = [e.strip() for e in os.environ.get("HA_CONTROL_ALLOW", "switch.tv").split(",") if e.strip()]
+    ids = [e.strip() for e in os.environ.get("HA_CONTROL_ALLOW", "switch.tv,light.2,light.1_2").split(",") if e.strip()]
     names = {}
     for st in ha_client.get_states():
         if st["entity_id"] in ids:
@@ -1386,14 +1434,27 @@ def _control_allowed() -> dict[str, str]:
     return names
 
 
-def _match_allowed(hint: str, allowed: dict[str, str]) -> str | None:
-    q = hint.lower().strip()
+_STOPWORDS = {"в", "у", "на", "до", "з", "із", "та", "і", "й", "мій", "моя", "будь", "ласка"}
+_DOMAIN_SYNONYMS = {"light": ["світло", "лампа", "лампочка"], "switch": ["розетка", "вимикач"]}
+
+
+def _match_allowed(hint: str, allowed: dict[str, str]) -> list[str]:
+    """Every meaningful word of the phrase must match the device (name or domain synonym,
+    inflection-tolerant) — a lone generic word like "світло" must not match every lamp.
+    Several lamps sharing a room word (e.g. two "зала" lamps) all match: "світло в залі"
+    means the room's light, not one specific bulb."""
+    tokens = [w for w in hint.lower().split() if w not in _STOPWORDS]
+    if not tokens:
+        return []
+    matches = []
     for eid, name in allowed.items():
-        words = name.lower().split()
-        if q == name.lower() or any(w.startswith(qt) or difflib.SequenceMatcher(None, qt, w).ratio() > 0.8
-                                    for qt in q.split() for w in words):
-            return eid
-    return None
+        words = name.lower().replace("_", " ").split() + _DOMAIN_SYNONYMS.get(eid.split(".")[0], [])
+        def hit(qt: str) -> bool:
+            return any(w.startswith(qt[:4]) or qt.startswith(w[:4]) or difflib.SequenceMatcher(None, qt, w).ratio() > 0.72
+                       for w in words)
+        if all(hit(qt) for qt in tokens):
+            matches.append(eid)
+    return matches
 
 
 def _timer_for(eid: str) -> str | None:
@@ -1429,10 +1490,13 @@ def _timer_status(timer_id: str, name: str) -> str:
 def tool_ha_switch(args: dict, user_text: str = "") -> str:
     allowed = _control_allowed()
     hint, state, when = (args.get("device") or "").strip(), args.get("state"), args.get("when") or "now"
-    eid = _match_allowed(hint, allowed)
-    if not eid:
+    eids = _match_allowed(hint, allowed)
+    if not eids:
         return (f"НЕ ЗМІНЕНО. «{hint}» немає в списку пристроїв, якими мені дозволено керувати"
                 + (f" (дозволено: {', '.join(allowed.values())})." if allowed else "."))
+    if when != "now" and len(eids) > 1:
+        return "НЕ ЗМІНЕНО. Це стосується кількох пристроїв (" + ", ".join(allowed[e] for e in eids) + "), а таймер можна поставити лише на один. Уточни, який саме."
+    eid = eids[0]
     name = allowed[eid]
     # The tool is offered on timer words too, so re-check what the user actually asked for:
     # switching (now / scheduling) needs a power verb or a timer word; status and cancel need a timer word.
@@ -1476,12 +1540,21 @@ def tool_ha_switch(args: dict, user_text: str = "") -> str:
         return f"Заплановано: вимкну «{name}» {what}, близько {end:%H:%M}.{note}"
     if state not in ("on", "off"):
         return "НЕ ЗМІНЕНО. Вкажи, увімкнути чи вимкнути."
-    ha_client.call_service("switch", "turn_on" if state == "on" else "turn_off", eid)
-    for _ in range(6):  # the state follows the command a moment later
-        time.sleep(0.5)
-        if ha_client.get_state(eid)["state"] == state:
-            return f"{'Увімкнено' if state == 'on' else 'Вимкнено'}: «{name}»."
-    return f"НЕ ЗМІНЕНО. Команду надіслано, але «{name}» не перейшов у стан {state}."
+    ok, failed = [], []
+    for e in eids:
+        ha_client.call_service(e.split(".")[0], "turn_on" if state == "on" else "turn_off", e)
+    for e in eids:
+        for _ in range(6):  # the state follows the command a moment later
+            time.sleep(0.5)
+            if ha_client.get_state(e)["state"] == state:
+                ok.append(allowed[e]); break
+        else:
+            failed.append(allowed[e])
+    verb = "Увімкнено" if state == "on" else "Вимкнено"
+    text = f"{verb}: {', '.join(ok)}." if ok else ""
+    if failed:
+        text += f" НЕ ЗМІНЕНО для: {', '.join(failed)} (команду надіслано, стан не підтверджено)."
+    return text.strip()
 
 
 def _fmt_dur(minutes: float) -> str:
@@ -1570,6 +1643,60 @@ def tool_get_activity_periods(args: dict) -> str:
     return head + "\n" + last + more + "\n" + "\n".join(lines)
 
 
+def _get_watched_movies_schema() -> dict:
+    return next(t for t in TOOLS if t["function"]["name"] == "get_watched_movies")
+
+
+def _log_watched_movie_schema() -> dict:
+    return next(t for t in TOOLS if t["function"]["name"] == "log_watched_movie")
+
+
+def _index_movie(row: dict) -> None:
+    """Embed and upsert right after the write (variant A — simple, low volume)."""
+    text = (f"{row['title']} ({row['year'] or '?'}). Режисер: {row['director'] or '?'}. "
+            f"Жанри: {', '.join(row['genres'])}. Оцінка: {row['rating']}/10. {row['review'] or ''}")
+    vector = embed(text)
+    key = row["imdb_id"] or f"{row['title'].lower()}-{row['year']}"
+    point_id = abs(hash(key)) % (2**63)
+    qdrant_client().upsert("watched_movies", points=[{
+        "id": point_id, "vector": vector,
+        "payload": {"imdb_id": row["imdb_id"], "title": row["title"], "year": row["year"], "director": row["director"],
+                    "genres": row["genres"], "rating": row["rating"], "watched_date": row["watched_date"],
+                    "text": text},
+    }])
+    movies_db.mark_indexed(row["id"])
+
+
+def tool_log_watched_movie(args: dict) -> str:
+    title, year = (args.get("title") or "").strip(), args.get("year")
+    rating = args.get("rating")
+    if not title or not isinstance(year, int):
+        return "НЕ ЗМІНЕНО. Потрібні назва і рік."
+    if not isinstance(rating, (int, float)) or not 0 <= rating <= 10:
+        return "НЕ ЗМІНЕНО. Оцінка має бути числом від 0 до 10."
+    from qdrant_client.http.exceptions import UnexpectedResponse
+    if "watched_movies" not in [c.name for c in qdrant_client().get_collections().collections]:
+        from qdrant_client.models import Distance, VectorParams
+        qdrant_client().create_collection("watched_movies", vectors_config=VectorParams(size=len(embed(title)), distance=Distance.COSINE))
+    row = movies_db.log_watched_movie(title, year, (args.get("imdb_id") or "").strip() or None, args.get("director"),
+                                      args.get("genres") or [], float(rating), args.get("review"))
+    try:
+        _index_movie(row)
+        indexed = True
+    except (requests.exceptions.RequestException, UnexpectedResponse) as e:
+        indexed = False
+        print(f"movie index error: {type(e).__name__}", flush=True)
+    note = "" if indexed else " (запис збережено, індексація для рекомендацій не вдалась — спробую пізніше)"
+    return f"Записано: «{title}» ({year}) — {rating}/10.{note}"
+
+
+def tool_get_watched_movies(args: dict) -> str:
+    rows = movies_db.get_watched_movies(min_rating=args.get("min_rating"), genre=args.get("genre"))
+    if not rows:
+        return "Оцінок переглянутих фільмів ще немає."
+    return "\n".join(f"{r['title']} ({r['year'] or '?'}){' — реж. ' + r['director'] if r.get('director') else ''}: {r['rating']}/10" + (f" — {r['review']}" if r["review"] else "") for r in rows)
+
+
 DISPATCH = {
     "search_knowledge": tool_search_knowledge,
     "get_live_state": tool_get_live_state,
@@ -1582,6 +1709,8 @@ DISPATCH = {
     "note_add": tool_note_add,
     "notes_search": tool_notes_search,
     "get_activity_periods": tool_get_activity_periods,
+    "log_watched_movie": tool_log_watched_movie,
+    "get_watched_movies": tool_get_watched_movies,
     "grocy_stock": tool_grocy_stock,
     "grocy_shopping_list": tool_grocy_shopping_list,
     "grocy_recipes": tool_grocy_recipes,
