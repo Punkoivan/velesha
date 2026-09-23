@@ -826,7 +826,7 @@ def tools_for(user_text: str) -> list[dict]:
         tools = tools + [_qbit_add_schema()]
     # Read-only and cheap, so always offered: a word gate looked only at the
     # latest message and lost the request in multi-turn talk (ADR-0029).
-    tools = tools + [_toloka_search_schema(), _get_reminders_schema()]
+    tools = tools + [_toloka_search_schema(), _get_reminders_schema(), _notes_search_schema()]
     # get_watched_movies is already unconditionally in TOOLS (not a CONTROL_TOOL) — do not re-add it.
     if _LOG_MOVIE_RE.search(text):
         tools = tools + [_log_watched_movie_schema()]
@@ -851,7 +851,8 @@ def tools_for(user_text: str) -> list[dict]:
     # Adding from Toloka works only on a variant the user was just shown.
     if _fresh_search() and (_ADD_VERB_RE.search(text) or _fresh_pending() or _names_a_category(text)):
         tools = tools + [_toloka_add_schema()]
-    tools = tools + _note_schemas(text)
+    if _NOTE_ADD_RE.search(text):
+        tools = tools + [_note_add_schema()]
     if not users.is_admin():
         tools = [x for x in tools if x["function"]["name"] not in ADMIN_TOOLS]
     # Defence in depth: a tool baked into the base TOOLS list plus its own gated
@@ -1431,26 +1432,32 @@ def _write_draft(d: dict) -> str:
 
 _NOTES_DIR = pathlib.Path(__file__).parent / "data" / "notes"
 _NOTE_ADD_RE = re.compile(r"(запиши|запам'ятай|запамятай|занотуй|додай нотатку|нова нотатка|збережи нотатку)", re.IGNORECASE)
-_NOTE_READ_RE = re.compile(r"(нотатк|що я (просив|казав|записував)|що ти записав)", re.IGNORECASE)
+_NOTES_SIM_THRESHOLD = 0.5  # bge-m3 cosine, tuned loosely — see ADR-0046
 
 
 def _notes_file() -> pathlib.Path:
     return _NOTES_DIR / f"{users.current()}.jsonl"  # the caller only ever sees their own file
 
 
-def _note_schemas(text: str) -> list[dict]:
-    out = []
-    if _NOTE_ADD_RE.search(text):
-        out.append({"type": "function", "function": {
-            "name": "note_add",
-            "description": "Записати особисту нотатку користувача (бачить лише він). Лише за явним проханням записати/запам'ятати.",
-            "parameters": {"type": "object", "properties": {"text": {"type": "string", "description": "Текст нотатки, як сказав користувач"}}, "required": ["text"]}}})
-    if _NOTE_READ_RE.search(text) or out:
-        out.append({"type": "function", "function": {
-            "name": "notes_search",
-            "description": "Особисті нотатки користувача: пошук за словом або останні. Інших людей нотатки недоступні.",
-            "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Слово для пошуку; порожньо — останні"}}}}})
-    return out
+def _note_add_schema() -> dict:
+    return {"type": "function", "function": {
+        "name": "note_add",
+        "description": "Записати особисту нотатку користувача (бачить лише він). Лише за явним проханням записати/запам'ятати.",
+        "parameters": {"type": "object", "properties": {"text": {"type": "string", "description": "Текст нотатки, як сказав користувач"}}, "required": ["text"]}}}
+
+
+def _notes_search_schema() -> dict:
+    return {"type": "function", "function": {
+        "name": "notes_search",
+        "description": "Особисті нотатки користувача: пошук за словом/змістом (напр. «де батарейки») або останні, якщо без запиту. Інших людей нотатки недоступні.",
+        "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Що шукати; порожньо — останні"}}}}}
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    return dot / (na * nb) if na and nb else 0.0
 
 
 def tool_note_add(args: dict) -> str:
@@ -1458,8 +1465,13 @@ def tool_note_add(args: dict) -> str:
     if not text:
         return "НЕ ЗМІНЕНО. Порожня нотатка."
     _NOTES_DIR.mkdir(parents=True, exist_ok=True)
+    row = {"at": datetime.datetime.now(_TZ).strftime("%Y-%m-%d %H:%M"), "text": text}
+    try:
+        row["vec"] = [round(x, 5) for x in embed(text)]
+    except Exception:
+        pass  # embedding server down — note is still saved, just substring-searchable only until re-embedded
     with _notes_file().open("a", encoding="utf-8") as f:
-        f.write(json.dumps({"at": datetime.datetime.now(_TZ).strftime("%Y-%m-%d %H:%M"), "text": text}, ensure_ascii=False) + "\n")
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
     return f"Записано в особисті нотатки: «{text[:80]}»."
 
 
@@ -1468,12 +1480,30 @@ def tool_notes_search(args: dict) -> str:
     if not path.exists():
         return "Особистих нотаток ще немає."
     rows = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
-    q = (args.get("query") or "").lower().strip()
-    if q:
-        rows = [r for r in rows if any(w[:5] in r["text"].lower() for w in q.split())]
-    if not rows:
+    q = (args.get("query") or "").strip()
+    if not q:
+        picked = rows[-15:]
+    else:
+        ql = q.lower()
+        substr = [r for r in rows if any(w[:5] in r["text"].lower() for w in ql.split() if len(w) >= 3)]
+        semantic = []
+        try:
+            qvec = embed(q)
+            scored = sorted(
+                ((r, _cosine(qvec, r["vec"])) for r in rows if r.get("vec")),
+                key=lambda pair: pair[1], reverse=True)
+            semantic = [r for r, score in scored[:5] if score >= _NOTES_SIM_THRESHOLD]
+        except Exception:
+            pass  # embedding server down — substring hits still work
+        seen, picked = set(), []
+        for r in substr + semantic:
+            key = (r["at"], r["text"])
+            if key not in seen:
+                seen.add(key)
+                picked.append(r)
+    if not picked:
         return "У ваших нотатках нічого не знайдено."
-    return "\n".join(f"{r['at']}: {r['text']}" for r in rows[-15:])
+    return "\n".join(f"{r['at']}: {r['text']}" for r in picked[:15])
 
 
 
