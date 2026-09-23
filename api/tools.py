@@ -827,7 +827,7 @@ def tools_for(user_text: str) -> list[dict]:
     # Read-only and cheap, so always offered: a word gate looked only at the
     # latest message and lost the request in multi-turn talk (ADR-0029).
     tools = tools + [_toloka_search_schema()]
-    tools = tools + [_get_watched_movies_schema()]
+    # get_watched_movies is already unconditionally in TOOLS (not a CONTROL_TOOL) — do not re-add it.
     if _LOG_MOVIE_RE.search(text):
         tools = tools + [_log_watched_movie_schema()]
     for name, (desc, gate) in _GROCY_SCHEMAS.items():
@@ -854,7 +854,16 @@ def tools_for(user_text: str) -> list[dict]:
     tools = tools + _note_schemas(text)
     if not users.is_admin():
         tools = [x for x in tools if x["function"]["name"] not in ADMIN_TOOLS]
-    return tools
+    # Defence in depth: a tool baked into the base TOOLS list plus its own gated
+    # re-add (a mistake this file has made before, ADR-0045) must never reach the
+    # model twice — ADK logs a warning and shadows the second one.
+    seen, deduped = set(), []
+    for tool in tools:
+        name = tool["function"]["name"]
+        if name not in seen:
+            seen.add(name)
+            deduped.append(tool)
+    return deduped
 
 
 # The only device this tool may ever start playback on — a state-changing
