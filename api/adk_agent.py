@@ -44,6 +44,17 @@ def _text(content: types.Content | None) -> str:
     return " ".join(p.text for p in (content.parts if content else []) if getattr(p, "text", None))
 
 
+def _recent_user_text(ctx, n: int = KEEP_USER_TURNS) -> str:
+    """Current message plus the last few user turns from the session — a word
+    gate that only looked at the latest message lost multi-turn requests
+    (ADR-0029 hit this for Toloka; reminders had the same bug)."""
+    if ctx is None:
+        return ""
+    session = getattr(ctx, "session", None)
+    past = [_text(e.content) for e in (session.events if session else []) if e.author == "user"]
+    return " ".join([t for t in past if t][-n:] + [_text(ctx.user_content)])
+
+
 class LegacyTool(BaseTool):
     """One of our JSON-schema tools, run through `tools.call_tool` unchanged."""
 
@@ -66,7 +77,7 @@ class PerMessageTools(BaseToolset):
     """`tools_for`: which tools this message may use (action tools need an explicit phrase)."""
 
     async def get_tools(self, readonly_context=None):
-        text = _text(readonly_context.user_content) if readonly_context else ""
+        text = _recent_user_text(readonly_context)
         return [LegacyTool(s) for s in legacy.tools_for(text)]
 
     async def close(self):
@@ -178,7 +189,7 @@ class Engine:
             self._runners[hosted] = Runner(agent=agent, app_name=APP, session_service=self.sessions)
 
     def _instruction(self, ctx) -> str:
-        text = _text(ctx.user_content)
+        text = _recent_user_text(ctx)
         names = {t["function"]["name"] for t in legacy.tools_for(text)}
         if self.jellyfin and not legacy.in_recipe_import(text):
             names |= jellyfin_names_for(text)

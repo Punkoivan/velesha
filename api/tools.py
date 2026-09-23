@@ -826,7 +826,7 @@ def tools_for(user_text: str) -> list[dict]:
         tools = tools + [_qbit_add_schema()]
     # Read-only and cheap, so always offered: a word gate looked only at the
     # latest message and lost the request in multi-turn talk (ADR-0029).
-    tools = tools + [_toloka_search_schema()]
+    tools = tools + [_toloka_search_schema(), _get_reminders_schema()]
     # get_watched_movies is already unconditionally in TOOLS (not a CONTROL_TOOL) — do not re-add it.
     if _LOG_MOVIE_RE.search(text):
         tools = tools + [_log_watched_movie_schema()]
@@ -845,7 +845,7 @@ def tools_for(user_text: str) -> list[dict]:
     if _POWER_RE.search(text) or _TIMER_RE.search(text):
         tools = tools + [_HA_SWITCH_SCHEMA]
     if _REMIND_RE.search(text):
-        tools = tools + [_remind_me_schema(), _get_reminders_schema(), _cancel_reminder_schema()]
+        tools = tools + [_remind_me_schema(), _cancel_reminder_schema()]
     if _WEB_RE.search(text) and web_search_available():
         tools = tools + [_web_search_schema()]
     # Adding from Toloka works only on a variant the user was just shown.
