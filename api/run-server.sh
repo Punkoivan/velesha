@@ -2,7 +2,7 @@
 # Launches the Velesha API under systemd (ADR-0045) — foreground, no nohup/disown,
 # systemd owns the process and captures stdout/stderr into the journal.
 set -euo pipefail
-ROOT=/home/punka/projects/velesha
+ROOT="$HOME/projects/velesha"
 cd "$ROOT/api"
 
 export CHAT_PROVIDER=openai
