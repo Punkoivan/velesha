@@ -36,6 +36,9 @@ APP = "velesha"
 MAX_LLM_CALLS = 6
 SESSION_TTL = 60 * 60  # HA forgets a conversation after minutes; we keep a person's for an hour (ADR-0034)
 KEEP_USER_TURNS = 3
+# Read-only tools whose entire job is reporting things that already happened —
+# calling them is itself grounding for "claim" wording in the answer (ADR-0047).
+_CLAIM_GROUNDING_TOOLS = {"get_reminders", "notes_search"}
 
 _req: contextvars.ContextVar[dict] = contextvars.ContextVar("velesha_req")
 
@@ -303,7 +306,14 @@ class Engine:
                 return "Забагато кроків міркування — не вдалось отримати остаточну відповідь.", state["acted"], hosted
             return "Не вдалося сформувати відповідь — спробуй ще раз.", state["acted"], hosted
         self.last_calls = state["calls"]
-        return (answer or "\n\n".join(verbatim)), state["acted"], hosted
+        # get_reminders/notes_search only ever report things that already
+        # happened — their answers legitimately use "заплановано"/"записано"
+        # wording without a control tool running this turn. Treating that as
+        # an unfounded claim scared the user into thinking a real reminder
+        # had failed (main.py's _CLAIM_RE has no way to tell "I just did X"
+        # from "here's the X you already have").
+        grounded = state["acted"] or bool(_CLAIM_GROUNDING_TOOLS & set(state["calls"]))
+        return (answer or "\n\n".join(verbatim)), grounded, hosted
 
     async def close(self) -> None:
         if self.jellyfin:
