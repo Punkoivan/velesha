@@ -628,7 +628,9 @@ _GROCY_IMPORT_RE = re.compile(
     r"(додай|додати|перенеси|перенести|занеси|імпортуй|закинь).*рецепт|"
     r"рецепт.*(додай|додати|перенеси|перенести|занеси|імпортуй|закинь)|"
     r"рецепт.*(grocy|гроч|грок)|(grocy|гроч|грок).*рецепт", re.IGNORECASE)
-_CONFIRM_RE = re.compile(r"^\W*(так|ок|окей|добре|давай|підтверджую|записуй|роби|створюй|додавай)\b", re.IGNORECASE)
+_CONFIRM_RE = re.compile(
+    r"(так\b|\bок\b|окей|добре|давай|підтверджую|запис(уй|уємо|ати)|роби|створюй|додавай|додай|"
+    r"вірно|правильно|норм)", re.IGNORECASE)
 _recipe_state: dict[str, dict] = {}
 
 
@@ -839,7 +841,13 @@ def tools_for(user_text: str) -> list[dict]:
             tools = tools + [_grocy_action_schema(name, desc)]
     short_reply = len(text.split()) <= 4
     in_import = _fresh_import_ctx() and short_reply
-    if _GROCY_IMPORT_RE.search(text) or in_import or (_fresh_recipe_draft() and _CONFIRM_RE.search(text)):
+    # A fresh draft alone is enough to keep offering these — the write itself
+    # still needs confirm=true + a real confirmation word + a title match
+    # (see tool_grocy_recipe_import/tool_recipe_add). Requiring a confirm-word
+    # match here too meant "все вірно, записуємо" (no listed word at the very
+    # start) got no tool at all and the model apologized for a missing tool
+    # that was never really missing.
+    if _GROCY_IMPORT_RE.search(text) or in_import or _fresh_recipe_draft():
         tools = tools + [_GROCY_IMPORT_SCHEMA, _GROCY_MISSING_SCHEMA, _recipe_add_schema()]
     if in_import:  # a bare dish name mid-import is not a film title or a torrent
         tools = [x for x in tools if x["function"]["name"] not in ("toloka_search",)]
