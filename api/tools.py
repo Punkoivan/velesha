@@ -1324,7 +1324,8 @@ def _extract_ingredients(text: str) -> tuple[int, list[dict]]:
     body = {
         "model": os.environ.get("CHAT_MODEL", "gpt-4.1-mini"),
         "response_format": {"type": "json_object"},
-        "temperature": 0,
+        # No "temperature": 0 — gpt-5.6-luna (ADR-0037) rejects any value but the
+        # default (1); this call used to only ever run against gpt-4.1-mini.
         "messages": [
             {"role": "system", "content": (
                 "З рецепта витягни ВСІ інгредієнти. Відповідь — JSON "
