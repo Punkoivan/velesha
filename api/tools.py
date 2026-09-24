@@ -625,8 +625,10 @@ _GROCY_SHOP_RE = re.compile(r"(список покупок|списку поку
 _GROCY_COOK_RE = re.compile(r"(приготував|приготувала|зварив|зварила|спік|спекла|засмажив|засмажила)", re.IGNORECASE)
 _GROCY_RSHOP_RE = re.compile(r"(список покупок|списку покупок|додай.*не вистача|не вистача.*додай)", re.IGNORECASE)
 _GROCY_IMPORT_RE = re.compile(
-    r"(додай|додати|перенеси|перенести|занеси|імпортуй|закинь).*рецепт|"
-    r"рецепт.*(додай|додати|перенеси|перенести|занеси|імпортуй|закинь)|"
+    r"(додай|додати|перенеси|перенести|занеси|імпортуй|закинь|запиши|запам'ятай|запамятай|"
+    r"занотуй|збережи|зберегти).*рецепт|"
+    r"рецепт.*(додай|додати|перенеси|перенести|занеси|імпортуй|закинь|запиши|запам'ятай|запамятай|"
+    r"занотуй|збережи|зберегти)|"
     r"рецепт.*(grocy|гроч|грок)|(grocy|гроч|грок).*рецепт", re.IGNORECASE)
 _CONFIRM_RE = re.compile(
     r"(так\b|\bок\b|окей|добре|давай|підтверджую|запис(уй|уємо|ати)|роби|створюй|додавай|додай|"
@@ -1470,6 +1472,7 @@ def tool_recipe_add(args: dict, user_text: str = "") -> str:
     title = (args.get("title") or "").strip()
     if not title:
         return "НЕ ЗМІНЕНО. Яка назва рецепта?"
+    _rs()["ctx_at"] = time.time()  # same 60-min "recipe conversation" window as grocy_recipe_import (ADR-0033)
     d = _rs()["draft"]
     if (args.get("confirm") and _fresh_recipe_draft() and d and _CONFIRM_RE.search(user_text)
             and _grocy_title_match(title, d["title"])):
