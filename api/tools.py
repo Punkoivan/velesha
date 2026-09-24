@@ -623,7 +623,10 @@ _GROCY_SHOP_RE = re.compile(r"(список покупок|списку поку
 
 _GROCY_COOK_RE = re.compile(r"(приготував|приготувала|зварив|зварила|спік|спекла|засмажив|засмажила)", re.IGNORECASE)
 _GROCY_RSHOP_RE = re.compile(r"(список покупок|списку покупок|додай.*не вистача|не вистача.*додай)", re.IGNORECASE)
-_GROCY_IMPORT_RE = re.compile(r"рецепт.*(grocy|гроч|грок)|(grocy|гроч|грок).*рецепт", re.IGNORECASE)
+_GROCY_IMPORT_RE = re.compile(
+    r"(додай|додати|перенеси|перенести|занеси|імпортуй|закинь).*рецепт|"
+    r"рецепт.*(додай|додати|перенеси|перенести|занеси|імпортуй|закинь)|"
+    r"рецепт.*(grocy|гроч|грок)|(grocy|гроч|грок).*рецепт", re.IGNORECASE)
 _CONFIRM_RE = re.compile(r"^\W*(так|ок|окей|добре|давай|підтверджую|записуй|роби|створюй|додавай)\b", re.IGNORECASE)
 _recipe_state: dict[str, dict] = {}
 
