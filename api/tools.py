@@ -569,12 +569,13 @@ def tool_get_sensor_history(args: dict) -> str:
 # model decision.
 CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
                  "grocy_consume", "grocy_add_stock", "grocy_shopping_add",
-                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "note_add", "ha_switch", "log_watched_movie", "remind_me", "cancel_reminder"}
+                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "recipe_add",
+                 "note_add", "ha_switch", "log_watched_movie", "remind_me", "cancel_reminder"}
 
 # Answered verbatim, without a second model call (ADR-0024).
 # Administration stays with the admin (ADR-0035); everything else is shared.
 ADMIN_TOOLS = {"qbittorrent_status", "qbittorrent_list", "qbittorrent_add", "toloka_search", "toloka_add"}
-PASSTHROUGH_TOOLS = {"toloka_search", "grocy_recipe_import"}
+PASSTHROUGH_TOOLS = {"toloka_search", "grocy_recipe_import", "recipe_add"}
 _POWER_RE = re.compile(r"(вимкн|вимик|виключ|погас|увімкн|ввімкн|включ|вруб|запал)", re.IGNORECASE)
 _TIMER_RE = re.compile(r"(таймер|заплан|скасу|відміни|відмін)", re.IGNORECASE)
 _COMMAND_RE = re.compile(
@@ -839,7 +840,7 @@ def tools_for(user_text: str) -> list[dict]:
     short_reply = len(text.split()) <= 4
     in_import = _fresh_import_ctx() and short_reply
     if _GROCY_IMPORT_RE.search(text) or in_import or (_fresh_recipe_draft() and _CONFIRM_RE.search(text)):
-        tools = tools + [_GROCY_IMPORT_SCHEMA, _GROCY_MISSING_SCHEMA]
+        tools = tools + [_GROCY_IMPORT_SCHEMA, _GROCY_MISSING_SCHEMA, _recipe_add_schema()]
     if in_import:  # a bare dish name mid-import is not a film title or a torrent
         tools = [x for x in tools if x["function"]["name"] not in ("toloka_search",)]
     for name, (desc, gate) in _GROCY_RECIPE_SCHEMAS.items():
@@ -1407,12 +1408,12 @@ def tool_grocy_recipe_import(args: dict, user_text: str = "") -> str:
     return _draft_text(d)
 
 
-def _write_draft(d: dict) -> str:
+def _write_draft(d: dict, description: str = "З Tandoor (перенесено агентом)") -> str:
     units = {u["name"].lower(): u["id"] for u in grocy_client.objects("quantity_units")}
     loc = next((l["id"] for l in grocy_client.objects("locations") if l["name"] == "Кухня"), 1)
     grp = next((g["id"] for g in grocy_client.objects("product_groups") if g["name"] == "Продукти"), None)
     rid = grocy_client.create("recipes", {"name": d["title"], "type": "normal", "base_servings": d["servings"],
-                                          "description": "З Tandoor (перенесено агентом)"})
+                                          "description": description})
     written, created = 0, 0
     for l in d["lines"]:
         if l["product"] is None and l["amount"]:
@@ -1431,6 +1432,53 @@ def _write_draft(d: dict) -> str:
             written += 1
     _rs().update(draft=None)
     return f"Створено рецепт «{d['title']}» у Grocy: {written} інгредієнтів, нових продуктів {created}."
+
+
+def _recipe_add_schema() -> dict:
+    return {"type": "function", "function": {
+        "name": "recipe_add",
+        "description": (
+            "Створити НОВИЙ рецепт напряму в Grocy — власний, продиктований користувачем, або знайдений в "
+            "інтернеті (web_search). Використовуй, коли рецепта ще нема ні в Grocy, ні в Tandoor (для тих, що "
+            "вже є в Tandoor, є grocy_recipe_import). Спершу без confirm — повертає чернетку на підтвердження. "
+            "confirm=true лише коли користувач явно підтвердив чернетку."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Назва рецепта"},
+                "ingredients": {"type": "array", "items": {"type": "string"},
+                                "description": "Інгредієнти з кількостями, кожен рядком (напр. «200 г цукру»)"},
+                "steps": {"type": "array", "items": {"type": "string"}, "description": "Кроки приготування, кожен рядком"},
+                "confirm": {"type": "boolean", "description": "true — записати підтверджену чернетку"},
+            },
+            "required": ["title", "ingredients"],
+        },
+    }}
+
+
+def tool_recipe_add(args: dict, user_text: str = "") -> str:
+    title = (args.get("title") or "").strip()
+    if not title:
+        return "НЕ ЗМІНЕНО. Яка назва рецепта?"
+    d = _rs()["draft"]
+    if (args.get("confirm") and _fresh_recipe_draft() and d and _CONFIRM_RE.search(user_text)
+            and _grocy_title_match(title, d["title"])):
+        return _write_draft(d, description="Створено голосом через Velesha")
+    if any(r["name"].lower() == title.lower() for r in grocy_client.objects("recipes")):
+        return f"НЕ ЗМІНЕНО. Рецепт «{title}» уже є в Grocy."
+    ingredients = [i.strip() for i in (args.get("ingredients") or []) if i and i.strip()]
+    if not ingredients:
+        return "НЕ ЗМІНЕНО. Продиктуй інгредієнти з кількостями."
+    steps = [s.strip() for s in (args.get("steps") or []) if s and s.strip()]
+    text = "; ".join(ingredients)
+    if steps:
+        text += "\n" + "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1))
+    d = _build_draft(title, text)
+    if not any(l["amount"] for l in d["lines"]):
+        return "НЕ ЗМІНЕНО. Не вдалось розпізнати кількості в інгредієнтах — продиктуй ще раз, напр. «200 г цукру»."
+    _rs().update(draft=d, at=time.time())
+    return _draft_text(d)
 
 
 _NOTES_DIR = pathlib.Path(__file__).parent / "data" / "notes"
@@ -1977,6 +2025,7 @@ DISPATCH = {
     "grocy_shopping_list": tool_grocy_shopping_list,
     "grocy_recipes": tool_grocy_recipes,
     "grocy_recipe_import": tool_grocy_recipe_import,
+    "recipe_add": tool_recipe_add,
     "grocy_recipes_not_imported": tool_grocy_recipes_not_imported,
     "grocy_recipe_consume": tool_grocy_recipe_consume,
     "grocy_recipe_shopping": tool_grocy_recipe_shopping,
@@ -1999,7 +2048,7 @@ def call_tool(name: str, arguments_json: str, user_text: str = "") -> str:
     if name in ADMIN_TOOLS and not users.is_admin():
         return "НЕ ЗМІНЕНО. Ця дія доступна лише адміністратору."
     try:
-        if name in ("qbittorrent_add", "toloka_add", "grocy_recipe_import", "ha_switch", "cancel_reminder"):
+        if name in ("qbittorrent_add", "toloka_add", "grocy_recipe_import", "recipe_add", "ha_switch", "cancel_reminder"):
             return handler(args, user_text)
         return handler(args)
     except Exception as e:
