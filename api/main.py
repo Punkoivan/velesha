@@ -74,6 +74,10 @@ _CONTROL_LINES = {
         "- recipe_add: НОВИЙ рецепт з нуля напряму в Grocy — власний або знайдений в інтернеті (web_search), "
         "коли його нема ні в Grocy, ні в Tandoor (чернетка → підтвердження користувача → confirm=true)\n"
     ),
+    "recipe_cook": (
+        "- recipe_cook: покроково провести голосом по рецепту з Grocy — action=start (з name) починає, "
+        "next/repeat/restart керують кроками; передавай текст кроку користувачу дослівно\n"
+    ),
     "grocy_recipes_not_imported": "- grocy_recipes_not_imported: точний перелік рецептів Tandoor, яких ще немає в Grocy\n",
     "remind_me": (
         "- remind_me: разове нагадування, надішле пуш о вказаному часі (time \'19\' чи \'19:30\', або "

@@ -575,7 +575,7 @@ CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
 # Answered verbatim, without a second model call (ADR-0024).
 # Administration stays with the admin (ADR-0035); everything else is shared.
 ADMIN_TOOLS = {"qbittorrent_status", "qbittorrent_list", "qbittorrent_add", "toloka_search", "toloka_add"}
-PASSTHROUGH_TOOLS = {"toloka_search", "grocy_recipe_import", "recipe_add"}
+PASSTHROUGH_TOOLS = {"toloka_search", "grocy_recipe_import", "recipe_add", "recipe_cook"}
 _POWER_RE = re.compile(r"(вимкн|вимик|виключ|погас|увімкн|ввімкн|включ|вруб|запал)", re.IGNORECASE)
 _TIMER_RE = re.compile(r"(таймер|заплан|скасу|відміни|відмін)", re.IGNORECASE)
 _COMMAND_RE = re.compile(
@@ -852,7 +852,7 @@ def tools_for(user_text: str) -> list[dict]:
         tools = tools + [_qbit_add_schema()]
     # Read-only and cheap, so always offered: a word gate looked only at the
     # latest message and lost the request in multi-turn talk (ADR-0029).
-    tools = tools + [_toloka_search_schema(), _get_reminders_schema(), _notes_search_schema()]
+    tools = tools + [_toloka_search_schema(), _get_reminders_schema(), _notes_search_schema(), _recipe_cook_schema()]
     # grocy_recipe_import/recipe_add write, but only behind their own
     # draft+confirm+title-match gate (never on the first call) — so, same
     # reasoning as ADR-0029, always offered rather than word-gated. A regex
@@ -1487,16 +1487,20 @@ def tool_grocy_recipe_import(args: dict, user_text: str = "") -> str:
     d = _build_draft(rec["title"], rec["text"])
     if not any(l["amount"] for l in d["lines"]):
         return f"НЕ ЗМІНЕНО. У тексті «{rec['title']}» немає інгредієнтів з кількостями — переносити нічого."
+    # Tandoor's own step-by-step text (already has "Крок N: ..." markers from
+    # textify) — kept as the Grocy recipe's description so recipe_cook can
+    # walk through it later, instead of being discarded after the draft.
+    d["description"] = rec["text"]
     _rs().update(draft=d, at=time.time())
     return _draft_text(d)
 
 
-def _write_draft(d: dict, description: str = "З Tandoor (перенесено агентом)") -> str:
+def _write_draft(d: dict) -> str:
     units = {u["name"].lower(): u["id"] for u in grocy_client.objects("quantity_units")}
     loc = next((l["id"] for l in grocy_client.objects("locations") if l["name"] == "Кухня"), 1)
     grp = next((g["id"] for g in grocy_client.objects("product_groups") if g["name"] == "Продукти"), None)
     rid = grocy_client.create("recipes", {"name": d["title"], "type": "normal", "base_servings": d["servings"],
-                                          "description": description})
+                                          "description": d.get("description") or "Створено голосом через Velesha"})
     written, created = 0, 0
     for l in d["lines"]:
         if l["product"] is None and l["amount"]:
@@ -1548,7 +1552,7 @@ def tool_recipe_add(args: dict, user_text: str = "") -> str:
     d = _rs()["draft"]
     if (args.get("confirm") and _fresh_recipe_draft() and d and _CONFIRM_RE.search(user_text)
             and _grocy_title_match(title, d["title"])):
-        return _write_draft(d, description="Створено голосом через Velesha")
+        return _write_draft(d)
     if any(r["name"].lower() == title.lower() for r in grocy_client.objects("recipes")):
         return f"НЕ ЗМІНЕНО. Рецепт «{title}» уже є в Grocy."
     ingredients = [i.strip() for i in (args.get("ingredients") or []) if i and i.strip()]
@@ -1561,8 +1565,87 @@ def tool_recipe_add(args: dict, user_text: str = "") -> str:
     d = _build_draft(title, text)
     if not any(l["amount"] for l in d["lines"]):
         return "НЕ ЗМІНЕНО. Не вдалось розпізнати кількості в інгредієнтах — продиктуй ще раз, напр. «200 г цукру»."
+    # Steps kept verbatim (not re-derived from the LLM ingredient-extraction
+    # pass) so recipe_cook can walk through exactly what the user dictated.
+    d["description"] = "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1)) if steps else ""
     _rs().update(draft=d, at=time.time())
     return _draft_text(d)
+
+
+# Splits a Grocy recipe's description back into steps. Covers both
+# conventions this file writes: "1. text" (recipe_add) and Tandoor's own
+# "Крок N: ..." (grocy_recipe_import, via textify).
+_STEP_SPLIT_RE = re.compile(r"(?:\n|^)\s*(?:\d+\.|Крок\s*\d+:)\s*")
+_COOK_TTL = 60 * 60  # a real cooking session can run long — same window as _fresh_import_ctx
+_cook_state: dict[str, dict] = {}
+
+
+def _cook() -> dict:
+    return _cook_state.setdefault(users.current(), {"recipe": None, "steps": [], "idx": 0, "at": 0.0})
+
+
+def _fresh_cook() -> bool:
+    c = _cook()
+    return bool(c["steps"]) and time.time() - c["at"] < _COOK_TTL
+
+
+def _split_steps(description: str) -> list[str]:
+    parts = [p.strip() for p in _STEP_SPLIT_RE.split(description or "") if p.strip()]
+    return parts or ([description.strip()] if (description or "").strip() else [])
+
+
+def _recipe_cook_schema() -> dict:
+    return {"type": "function", "function": {
+        "name": "recipe_cook",
+        "description": (
+            "Покроково провести користувача голосом по рецепту з Grocy. action='start' — почати готування "
+            "(потрібна name); 'next' — наступний крок; 'repeat' — повторити поточний крок ще раз; "
+            "'restart' — почати цей рецепт заново з кроку 1."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["start", "next", "repeat", "restart"]},
+                "name": {"type": "string", "description": "Назва рецепта — лише для action='start'"},
+            },
+            "required": ["action"],
+        },
+    }}
+
+
+def tool_recipe_cook(args: dict) -> str:
+    action = args.get("action")
+    if action == "start":
+        name = (args.get("name") or "").strip()
+        if not name:
+            return "НЕ ЗМІНЕНО. Який рецепт готуємо?"
+        found = [r for r in grocy_client.objects("recipes")
+                 if name.lower() in r["name"].lower() or r["name"].lower() in name.lower()]
+        if not found:
+            return f"НЕ ЗМІНЕНО. У Grocy немає рецепта «{name}»."
+        if len(found) > 1:
+            return "Уточни, який саме рецепт: " + "; ".join(r["name"] for r in found[:5]) + "."
+        recipe = found[0]
+        steps = _split_steps(recipe.get("description") or "")
+        if not steps:
+            return f"У рецепта «{recipe['name']}» немає збережених кроків приготування."
+        _cook_state[users.current()] = {"recipe": recipe["name"], "steps": steps, "idx": 0, "at": time.time()}
+        return f"Починаємо «{recipe['name']}» ({len(steps)} крок(ів)). Крок 1: {steps[0]}"
+    if not _fresh_cook():
+        return "НЕ ЗМІНЕНО. Немає активного рецепта — скажи, який рецепт почати готувати."
+    c = _cook()
+    c["at"] = time.time()
+    if action == "repeat":
+        return f"Крок {c['idx'] + 1} з {len(c['steps'])}: {c['steps'][c['idx']]}"
+    if action == "restart":
+        c["idx"] = 0
+        return f"Починаємо «{c['recipe']}» заново. Крок 1: {c['steps'][0]}"
+    if action == "next":
+        if c["idx"] + 1 >= len(c["steps"]):
+            return f"Це був останній крок. «{c['recipe']}» готовий!"
+        c["idx"] += 1
+        return f"Крок {c['idx'] + 1} з {len(c['steps'])}: {c['steps'][c['idx']]}"
+    return "НЕ ЗМІНЕНО. Не зрозумів дію — start, next, repeat чи restart?"
 
 
 _NOTES_DIR = pathlib.Path(__file__).parent / "data" / "notes"
@@ -2116,6 +2199,7 @@ DISPATCH = {
     "grocy_consume": tool_grocy_consume,
     "grocy_add_stock": tool_grocy_add_stock,
     "grocy_product_add": tool_grocy_product_add,
+    "recipe_cook": tool_recipe_cook,
     "grocy_shopping_add": tool_grocy_shopping_add,
     "toloka_add": tool_toloka_add,
     "web_search": tool_web_search,
