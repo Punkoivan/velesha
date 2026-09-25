@@ -275,8 +275,9 @@ TOOLS = [
         "function": {
             "name": "cancel_reminder",
             "description": (
-                "Скасувати активне нагадування за частиною тексту (спершу глянь get_reminders, якщо не певен формулювання). "
-                "Щоб ПЕРЕНЕСТИ/ЗМІНИТИ нагадування — скасуй старе цим інструментом і постав нове через remind_me. "
+                "Скасувати активне нагадування АБО заплановану дію пилососа (vacuum_schedule) за частиною тексту "
+                "(спершу глянь get_reminders, якщо не певен формулювання — там видно й те, й те). "
+                "Щоб ПЕРЕНЕСТИ/ЗМІНИТИ — скасуй старе цим інструментом і постав нове через remind_me/vacuum_schedule. "
                 "Лише за прямим проханням скасувати/видалити/прибрати."
             ),
             "parameters": {
@@ -892,7 +893,12 @@ def tools_for(user_text: str) -> list[dict]:
     if show_all or _VACUUM_RE.search(text):
         tools = tools + [_vacuum_schema(), _vacuum_schedule_schema()]
     if show_all or _REMIND_RE.search(text):
-        tools = tools + [_remind_me_schema(), _cancel_reminder_schema()]
+        tools = tools + [_remind_me_schema()]
+    # cancel_reminder also cancels a scheduled vacuum_schedule run (same
+    # calendar) — offered on _TIMER_RE too ("скасуй"/"відміни"/"заплан"),
+    # not just the word "нагад", so "скасуй заплановане прибирання" reaches it.
+    if show_all or _REMIND_RE.search(text) or _TIMER_RE.search(text):
+        tools = tools + [_cancel_reminder_schema()]
     if (show_all or _WEB_RE.search(text)) and web_search_available():
         tools = tools + [_web_search_schema()]
     # Adding from Toloka works only on a variant the user was just shown.
