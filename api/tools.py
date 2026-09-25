@@ -1885,7 +1885,10 @@ _area_registry_cache: dict[str, list[dict]] = {}
 _AREA_CACHE_TTL = 10 * 60
 
 
-def _resolve_area(name: str) -> str | None:
+def _resolve_area(name: str) -> tuple[str | None, str | None]:
+    """(area_id, None) on a clear match, (None, error) otherwise — never guess
+    between ambiguous rooms (this household has both "Зала" and "Вітальня
+    Дніпро", both loosely matching "вітальня")."""
     now = time.time()
     if not _area_registry_cache or now - _area_registry_cache.get("at", 0) > _AREA_CACHE_TTL:
         try:
@@ -1893,13 +1896,21 @@ def _resolve_area(name: str) -> str | None:
             _area_registry_cache["at"] = now
         except Exception as e:
             print(f"area registry fetch error: {e}", flush=True)
-            return None
+            return None, f"Не вдалось перевірити список кімнат: {e}"
     name_l = name.lower().strip()
+    exact, fuzzy = [], []
     for area in _area_registry_cache.get("areas", []):
         candidates = [area["name"].lower()] + [a.lower() for a in area.get("aliases", []) if a]
-        if any(name_l == c or name_l in c or c in name_l for c in candidates):
-            return area["area_id"]
-    return None
+        if name_l in candidates:
+            exact.append(area)
+        elif any(name_l in c or c in name_l for c in candidates):
+            fuzzy.append(area)
+    matches = exact or fuzzy
+    if not matches:
+        return None, f"Не знайшов кімнату «{name}» в Home Assistant."
+    if len(matches) > 1:
+        return None, "Кілька кімнат підходять: " + "; ".join(a["name"] for a in matches[:5]) + ". Уточни точніше."
+    return matches[0]["area_id"], None
 
 
 def _do_vacuum_action(action: str, area_id: str | None = None, mode: str | None = None) -> str:
@@ -1945,9 +1956,9 @@ def tool_vacuum_control(args: dict) -> str:
     room = (args.get("room") or "").strip()
     area_id = None
     if room:
-        area_id = _resolve_area(room)
-        if not area_id:
-            return f"НЕ ЗМІНЕНО. Не знайшов кімнату «{room}» в Home Assistant."
+        area_id, err = _resolve_area(room)
+        if err:
+            return "НЕ ЗМІНЕНО. " + err
     result = _do_vacuum_action(action, area_id, args.get("mode"))
     return f"{result} ({room})" if room and not result.startswith("НЕ ЗМІНЕНО") else result
 
@@ -1982,9 +1993,9 @@ def tool_vacuum_schedule(args: dict) -> str:
     room = (args.get("room") or "").strip()
     area_id = None
     if room:
-        area_id = _resolve_area(room)
-        if not area_id:
-            return f"НЕ ЗМІНЕНО. Не знайшов кімнату «{room}» в Home Assistant."
+        area_id, err = _resolve_area(room)
+        if err:
+            return "НЕ ЗМІНЕНО. " + err
     mode = args.get("mode")
     if mode and mode not in ("vacuum", "mop", "vac_and_mop"):
         return "НЕ ЗМІНЕНО. Режим має бути vacuum, mop або vac_and_mop."
