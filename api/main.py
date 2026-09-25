@@ -32,7 +32,7 @@ from pydantic import BaseModel
 
 import guardrails
 import users
-from tools import CONTROL_TOOLS, PASSTHROUGH_TOOLS, call_tool, tools_for
+from tools import CONTROL_TOOLS, PASSTHROUGH_TOOLS, call_tool, tools_for, reminder_poll_loop
 
 # Local llama-server (always available as the private/fallback lane).
 # Optional hosted model (any OpenAI-compatible endpoint): set CHAT_API_KEY
@@ -149,6 +149,11 @@ def system_prompt(offered: set[str]) -> str:
     )
 
 app = FastAPI(title="Velesha API")
+
+
+@app.on_event("startup")
+async def _start_reminder_poller():
+    asyncio.create_task(reminder_poll_loop())
 
 
 @app.on_event("shutdown")

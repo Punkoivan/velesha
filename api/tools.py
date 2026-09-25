@@ -9,6 +9,7 @@ Three tools, chosen to close the exact gaps found in testing:
   counts and durations) — computed at query time, ADR-0020.
 """
 
+import asyncio
 import datetime
 import difflib
 import json
@@ -2086,7 +2087,7 @@ def tool_remind_me(args: dict) -> str:
     text = (args.get("text") or "").strip()
     if not text:
         return "НЕ ЗМІНЕНО. Що нагадати?"
-    calendar, just_created = _reminder_calendar_for(users.current())
+    calendar, _ = _reminder_calendar_for(users.current())
     now = datetime.datetime.now(_TZ)
     minutes = args.get("in_minutes")
     if minutes is not None:
@@ -2114,10 +2115,9 @@ def tool_remind_me(args: dict) -> str:
     if not _reminder_confirmed(calendar, text, when):
         return "НЕ ЗМІНЕНО. Команду надіслано, але нагадування не підтвердилось у календарі."
     note = ""
-    if just_created:
-        notify = os.environ.get(f"REMINDER_NOTIFY_{users.current().upper()}", "notify.mobile_app_<пристрій>")
-        note = (f" (це твій перший раз — попроси адміністратора додати в docs/ha/reminder-notify-automation.yaml "
-                f"рядок для «{calendar}» → {notify}, інакше сповіщення поки не прийде)")
+    if not _reminder_notify_target(users.current()):
+        note = (f" (адміністратору: постав REMINDER_NOTIFY_{users.current().upper()}=notify.<пристрій>, "
+                f"інакше push не прийде — подія в календарі є, доставку веде сам сервер, не автоматизація HA)")
     return f"Заплановано нагадування: «{text}» {when:%d.%m о %H:%M}.{note}"
 
 
@@ -2169,6 +2169,63 @@ def tool_cancel_reminder(args: dict, user_text: str = "") -> str:
     if any(x["uid"] == e["uid"] for x in still):
         return "НЕ ЗМІНЕНО. Скасування не підтвердилось."
     return f"Скасовано нагадування: «{e['summary']}»."
+
+
+def _reminder_notify_target(user: str) -> str | None:
+    """Bare notify service name (e.g. "mobile_app_punkas26"), no "notify." prefix."""
+    v = os.environ.get(f"REMINDER_NOTIFY_{user.upper()}")
+    return v.removeprefix("notify.") if v else None
+
+
+# Delivery lives here, not in an HA automation on the calendar's own "event:
+# start" trigger — that trigger is unreliable for events created shortly
+# before they fire (widely reported HA bug, not just a refresh-interval
+# thing) and silently missed two real reminders in testing. The calendar
+# event is still created (get_reminders reads it, and it's visible in HA's
+# own UI) — this poller just also owns pushing the notification, checking
+# every _REMINDER_POLL_INTERVAL seconds for events that just started.
+_REMINDER_POLL_INTERVAL = 20
+# Wider than the poll interval on purpose: a restart (deploy, crash) clears
+# _notified_reminders, so this also has to catch anything that started while
+# the server was down — a duplicate push after a rare restart is a much
+# smaller problem than a reminder that silently never arrives.
+_REMINDER_POLL_LOOKBACK = 10 * 60
+_notified_reminders: set[str] = set()
+
+
+async def poll_reminders_once() -> None:
+    now = datetime.datetime.now(_TZ)
+    window_start = now - datetime.timedelta(seconds=_REMINDER_POLL_LOOKBACK)
+    calendars = {"default": _REMINDER_CAL_DEFAULT, **_reminder_calendar_map()}
+    for user, calendar in calendars.items():
+        target = _reminder_notify_target(user)
+        if not target:
+            continue
+        try:
+            events = ha_client.calendar_events(calendar, window_start.isoformat(), now.isoformat())
+        except Exception as e:
+            print(f"reminder poll error ({calendar}): {e}", flush=True)
+            continue
+        for e in events:
+            uid = e.get("uid")
+            if not uid or uid in _notified_reminders:
+                continue
+            _notified_reminders.add(uid)
+            try:
+                ha_client.notify(target, "Нагадування", e["summary"])
+            except Exception as ex:
+                print(f"reminder push error ({calendar}/{uid}): {ex}", flush=True)
+    if len(_notified_reminders) > 1000:  # one-off uids, never revisited — cheap cap, not a real cache
+        _notified_reminders.clear()
+
+
+async def reminder_poll_loop() -> None:
+    while True:
+        try:
+            await poll_reminders_once()
+        except Exception as e:  # never let one bad tick kill the whole poller
+            print(f"reminder poll loop error: {e}", flush=True)
+        await asyncio.sleep(_REMINDER_POLL_INTERVAL)
 
 
 DISPATCH = {

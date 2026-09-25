@@ -9,6 +9,7 @@ export CHAT_PROVIDER=openai
 export CHAT_MODEL=gpt-5.6-luna
 export CHAT_REASONING=none   # gpt-5.6-luna refuses function tools without this (ADR-0037)
 export LOG_CALLER_PROMPT=1
+export REMINDER_NOTIFY_DEFAULT=notify.mobile_app_punkas26  # server-side reminder push, not the HA calendar automation (ADR-0049)
 
 exec sops exec-env "$ROOT/secrets.enc.env" \
   "sops --config /dev/null exec-env $ROOT/api/secrets.enc.env 'exec uv run uvicorn main:app --host 0.0.0.0 --port 8090'"

@@ -62,6 +62,12 @@ def call_service_data(domain: str, service: str, target: str, **data) -> None:
     r.raise_for_status()
 
 
+def notify(service: str, title: str, message: str) -> None:
+    """service is the bare name (e.g. "mobile_app_punkas26"), not "notify.<name>"."""
+    r = _session.post(f"{HA_URL}/api/services/notify/{service}", json={"title": title, "message": message}, timeout=15)
+    r.raise_for_status()
+
+
 def calendar_events(entity_id: str, start_iso: str, end_iso: str) -> list[dict]:
     r = _session.get(f"{HA_URL}/api/calendars/{entity_id}", params={"start": start_iso, "end": end_iso}, timeout=15)
     r.raise_for_status()
