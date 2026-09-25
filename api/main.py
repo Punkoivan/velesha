@@ -70,6 +70,10 @@ _CONTROL_LINES = {
     "grocy_recipe_consume": "- grocy_recipe_consume: рецепт з Grocy приготовано — списати інгредієнти\n",
     "grocy_recipe_shopping": "- grocy_recipe_shopping: додати до списку покупок нестачу для рецепта з Grocy\n",
     "grocy_recipe_import": "- grocy_recipe_import: перенести рецепт з Tandoor у Grocy (чернетка → підтвердження користувача → confirm=true)\n",
+    "recipe_add": (
+        "- recipe_add: НОВИЙ рецепт з нуля напряму в Grocy — власний або знайдений в інтернеті (web_search), "
+        "коли його нема ні в Grocy, ні в Tandoor (чернетка → підтвердження користувача → confirm=true)\n"
+    ),
     "grocy_recipes_not_imported": "- grocy_recipes_not_imported: точний перелік рецептів Tandoor, яких ще немає в Grocy\n",
     "remind_me": (
         "- remind_me: разове нагадування, надішле пуш о вказаному часі (time \'19\' чи \'19:30\', або "

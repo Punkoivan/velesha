@@ -582,6 +582,13 @@ _COMMAND_RE = re.compile(
     r"(включ|увімкн|ввімкн|запуст|постав|відтвор|\bplay\b|пауз|продовж|зупин|стоп|наступн|попередн|далі|пропуст|\bnext\b|\bstop\b|\bpause\b)",
     re.IGNORECASE,
 )
+# "Розкажи, що ти вмієш" — without this, the system prompt only describes
+# tools this exact message happens to trigger, so a generic capability
+# question got an incomplete answer (no reminders/notes/device control/
+# recipes mentioned, since none of THEIR gates matched either).
+_CAPABILITIES_RE = re.compile(
+    r"(що ти вмієш|на що ти здатн|які твої можливост|що вмієш|розкажи про себе|"
+    r"що (ти )?можеш|список (твоїх )?можливостей|яких функці)", re.IGNORECASE)
 
 
 _TORRENT_LINK_RE = re.compile(r"(magnet:\?\S+|https?://\S+)", re.IGNORECASE)
@@ -825,10 +832,15 @@ _GROCY_SCHEMAS = {
 
 def tools_for(user_text: str) -> list[dict]:
     text = user_text or ""
-    tools = TOOLS if _COMMAND_RE.search(text) else [t for t in TOOLS if t["function"]["name"] not in CONTROL_TOOLS]
+    # "Розкажи, що ти вмієш" needs every tool visible at once, not just the
+    # ones this exact phrasing happens to trigger — every gate below also
+    # opens for it.
+    show_all = bool(_CAPABILITIES_RE.search(text))
+    tools = TOOLS if (_COMMAND_RE.search(text) or show_all) \
+        else [t for t in TOOLS if t["function"]["name"] not in CONTROL_TOOLS]
     # Adding a torrent needs an actual link in the user's own message —
     # a model can't be allowed to invent one (ADR-0023).
-    if _TORRENT_LINK_RE.search(text):
+    if show_all or _TORRENT_LINK_RE.search(text):
         tools = tools + [_qbit_add_schema()]
     # Read-only and cheap, so always offered: a word gate looked only at the
     # latest message and lost the request in multi-turn talk (ADR-0029).
@@ -841,10 +853,10 @@ def tools_for(user_text: str) -> list[dict]:
     # fell back to note_add, the only tool it still had.
     tools = tools + [_GROCY_IMPORT_SCHEMA, _GROCY_MISSING_SCHEMA, _recipe_add_schema()]
     # get_watched_movies is already unconditionally in TOOLS (not a CONTROL_TOOL) — do not re-add it.
-    if _LOG_MOVIE_RE.search(text):
+    if show_all or _LOG_MOVIE_RE.search(text):
         tools = tools + [_log_watched_movie_schema()]
     for name, (desc, gate) in _GROCY_SCHEMAS.items():
-        if gate.search(text):  # state-changing: only on an explicit phrase (ADR-0032)
+        if show_all or gate.search(text):  # state-changing: only on an explicit phrase (ADR-0032)
             tools = tools + [_grocy_action_schema(name, desc)]
     short_reply = len(text.split()) <= 4
     if _GROCY_IMPORT_RE.search(text):
@@ -857,18 +869,18 @@ def tools_for(user_text: str) -> list[dict]:
     if in_import:  # a bare dish name mid-import is not a film title or a torrent
         tools = [x for x in tools if x["function"]["name"] not in ("toloka_search",)]
     for name, (desc, gate) in _GROCY_RECIPE_SCHEMAS.items():
-        if gate.search(text):
+        if show_all or gate.search(text):
             tools = tools + [_grocy_recipe_schema(name, desc)]
-    if _POWER_RE.search(text) or _TIMER_RE.search(text):
+    if show_all or _POWER_RE.search(text) or _TIMER_RE.search(text):
         tools = tools + [_HA_SWITCH_SCHEMA]
-    if _REMIND_RE.search(text):
+    if show_all or _REMIND_RE.search(text):
         tools = tools + [_remind_me_schema(), _cancel_reminder_schema()]
-    if _WEB_RE.search(text) and web_search_available():
+    if (show_all or _WEB_RE.search(text)) and web_search_available():
         tools = tools + [_web_search_schema()]
     # Adding from Toloka works only on a variant the user was just shown.
-    if _fresh_search() and (_ADD_VERB_RE.search(text) or _fresh_pending() or _names_a_category(text)):
+    if show_all or (_fresh_search() and (_ADD_VERB_RE.search(text) or _fresh_pending() or _names_a_category(text))):
         tools = tools + [_toloka_add_schema()]
-    if _NOTE_ADD_RE.search(text):
+    if show_all or _NOTE_ADD_RE.search(text):
         tools = tools + [_note_add_schema()]
     if not users.is_admin():
         tools = [x for x in tools if x["function"]["name"] not in ADMIN_TOOLS]
