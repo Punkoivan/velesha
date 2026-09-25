@@ -568,7 +568,7 @@ def tool_get_sensor_history(args: dict) -> str:
 # "порадь серіал на вечір" (ADR-0021). Deliberately a code gate, not a
 # model decision.
 CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
-                 "grocy_consume", "grocy_add_stock", "grocy_shopping_add",
+                 "grocy_consume", "grocy_add_stock", "grocy_shopping_add", "grocy_product_add",
                  "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "recipe_add",
                  "note_add", "ha_switch", "log_watched_movie", "remind_me", "cancel_reminder"}
 
@@ -627,6 +627,14 @@ _ADD_VERB_RE = re.compile(
     r"перш|друг|трет|четвер|п'ят)", re.IGNORECASE)
 _GROCY_CONSUME_RE = re.compile(r"(використав|використала|витратив|витратила|списав|списала|з'їв|з'їла|випив|випила|закінчив|закінчил)", re.IGNORECASE)
 _GROCY_ADD_RE = re.compile(r"(купив|купила|докупив|докупила|поклав|поклала|поповни|прибав|додай до запас|додати до запас)", re.IGNORECASE)
+# Broader than _GROCY_ADD_RE on purpose: creating a brand-new product is a
+# different (and less predictable) natural phrasing than restocking an
+# existing one ("додай товар", "заведи в перелік", "додай в grocy") —
+# offered alongside grocy_add_stock either way, and the tool itself refuses
+# if the product already exists.
+_GROCY_NEW_PRODUCT_RE = re.compile(
+    r"(дода|занес|завед|створ).*(товар|перелік|(grocy|гроч|грок))|"
+    r"(товар|перелік|(grocy|гроч|грок)).*(дода|занес|завед|створ)", re.IGNORECASE)
 _GROCY_SHOP_RE = re.compile(r"(список покупок|списку покупок|треба купити|потрібно купити|купити)", re.IGNORECASE)
 
 _GROCY_COOK_RE = re.compile(r"(приготував|приготувала|зварив|зварила|спік|спекла|засмажив|засмажила)", re.IGNORECASE)
@@ -858,6 +866,11 @@ def tools_for(user_text: str) -> list[dict]:
     for name, (desc, gate) in _GROCY_SCHEMAS.items():
         if show_all or gate.search(text):  # state-changing: only on an explicit phrase (ADR-0032)
             tools = tools + [_grocy_action_schema(name, desc)]
+    if show_all or _GROCY_ADD_RE.search(text) or _GROCY_NEW_PRODUCT_RE.search(text):
+        # grocy_add_stock only works on an existing product, so the model
+        # tries it first and falls back to this when told the product
+        # doesn't exist yet.
+        tools = tools + [_grocy_product_add_schema()]
     short_reply = len(text.split()) <= 4
     if _GROCY_IMPORT_RE.search(text):
         # Keeps the 60-min "recipe conversation" window alive (_fresh_import_ctx,
@@ -1243,6 +1256,50 @@ def tool_grocy_add_stock(args: dict) -> str:
 
 def tool_grocy_shopping_add(args: dict) -> str:
     return _grocy_change("shop", args)
+
+
+def _grocy_product_add_schema() -> dict:
+    return {"type": "function", "function": {
+        "name": "grocy_product_add",
+        "description": (
+            "Створити НОВИЙ товар у Grocy з початковим запасом — коли товару ще немає "
+            "(grocy_stock/grocy_add_stock кажуть, що його нема). Лише за явним проханням завести/додати товар "
+            "з указаною кількістю; для поповнення вже наявного товару — grocy_add_stock."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Назва товару, як сказав користувач"},
+                "amount": {"type": "number", "description": "Початкова кількість у запасі (0, якщо просто завести товар)"},
+                "unit": {"type": "string", "description": "Одиниця виміру (напр. л, кг, шт); якщо не сказано — 'шт'"},
+            },
+            "required": ["name", "amount"],
+        },
+    }}
+
+
+def tool_grocy_product_add(args: dict) -> str:
+    name = (args.get("name") or "").strip()
+    if not name:
+        return "НЕ ЗМІНЕНО. Яка назва товару?"
+    amount = args.get("amount")
+    if not isinstance(amount, (int, float)) or amount < 0:
+        return "НЕ ЗМІНЕНО. Вкажи початкову кількість (0, якщо просто завести товар без запасу)."
+    if _grocy_match(name, strict=True):
+        return f"НЕ ЗМІНЕНО. Товар «{name}» уже є в Grocy — онови запас через grocy_add_stock."
+    unit_name = (args.get("unit") or "шт").strip().lower()
+    units = {v.lower(): k for k, v in _grocy_units().items()}
+    unit_id = units.get(unit_name) or grocy_client.create("quantity_units", {"name": unit_name, "name_plural": unit_name})
+    loc = next((l["id"] for l in grocy_client.objects("locations") if l["name"] == "Кухня"), 1)
+    grp = next((g["id"] for g in grocy_client.objects("product_groups") if g["name"] == "Продукти"), None)
+    data = {"name": name, "location_id": loc, "qu_id_stock": unit_id, "qu_id_purchase": unit_id,
+            "qu_id_consume": unit_id, "qu_id_price": unit_id, "description": "Створено голосом через Velesha"}
+    if grp:
+        data["product_group_id"] = grp
+    pid = grocy_client.create("products", data)
+    if amount > 0:
+        grocy_client.set_stock(pid, amount, loc, note="Початковий запас через Velesha")
+    return f"Створено товар «{name}» у Grocy, початковий запас: {_fmt_amount(amount)} {unit_name}."
 
 
 def _tandoor_titles() -> list[str]:
@@ -2058,6 +2115,7 @@ DISPATCH = {
     "grocy_recipe_shopping": tool_grocy_recipe_shopping,
     "grocy_consume": tool_grocy_consume,
     "grocy_add_stock": tool_grocy_add_stock,
+    "grocy_product_add": tool_grocy_product_add,
     "grocy_shopping_add": tool_grocy_shopping_add,
     "toloka_add": tool_toloka_add,
     "web_search": tool_web_search,
