@@ -571,7 +571,8 @@ def tool_get_sensor_history(args: dict) -> str:
 CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
                  "grocy_consume", "grocy_add_stock", "grocy_shopping_add", "grocy_product_add",
                  "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "recipe_add",
-                 "note_add", "ha_switch", "vacuum_control", "log_watched_movie", "remind_me", "cancel_reminder"}
+                 "note_add", "ha_switch", "vacuum_control", "vacuum_schedule",
+                 "log_watched_movie", "remind_me", "cancel_reminder"}
 
 # Answered verbatim, without a second model call (ADR-0024).
 # Administration stays with the admin (ADR-0035); everything else is shared.
@@ -889,7 +890,7 @@ def tools_for(user_text: str) -> list[dict]:
     if show_all or _POWER_RE.search(text) or _TIMER_RE.search(text):
         tools = tools + [_HA_SWITCH_SCHEMA]
     if show_all or _VACUUM_RE.search(text):
-        tools = tools + [_vacuum_schema()]
+        tools = tools + [_vacuum_schema(), _vacuum_schedule_schema()]
     if show_all or _REMIND_RE.search(text):
         tools = tools + [_remind_me_schema(), _cancel_reminder_schema()]
     if (show_all or _WEB_RE.search(text)) and web_search_available():
@@ -1879,19 +1880,60 @@ _VACUUM_OK_TEXT = {
 }
 
 
+VACUUM_MODE_ENTITY = os.environ.get("VACUUM_MODE_ENTITY", "select.spalnia_roborock_s7_cleaning_mode")
+_area_registry_cache: dict[str, list[dict]] = {}
+_AREA_CACHE_TTL = 10 * 60
+
+
+def _resolve_area(name: str) -> str | None:
+    now = time.time()
+    if not _area_registry_cache or now - _area_registry_cache.get("at", 0) > _AREA_CACHE_TTL:
+        try:
+            _area_registry_cache["areas"] = ha_client.area_registry()
+            _area_registry_cache["at"] = now
+        except Exception as e:
+            print(f"area registry fetch error: {e}", flush=True)
+            return None
+    name_l = name.lower().strip()
+    for area in _area_registry_cache.get("areas", []):
+        candidates = [area["name"].lower()] + [a.lower() for a in area.get("aliases", []) if a]
+        if any(name_l == c or name_l in c or c in name_l for c in candidates):
+            return area["area_id"]
+    return None
+
+
+def _do_vacuum_action(action: str, area_id: str | None = None, mode: str | None = None) -> str:
+    service = _VACUUM_SERVICE.get(action)
+    if not service:
+        return "НЕ ЗМІНЕНО. Не зрозумів дію — start, stop, pause, dock чи locate?"
+    try:
+        if mode:
+            ha_client.call_service("select", "select_option", VACUUM_MODE_ENTITY, option=mode)
+        if action == "start" and area_id:
+            ha_client.call_service_data("vacuum", "clean_area", VACUUM_ENTITY, cleaning_area_id=[area_id])
+        else:
+            ha_client.call_service("vacuum", service, VACUUM_ENTITY)
+    except Exception as e:
+        return f"НЕ ЗМІНЕНО. Помилка керування роботом: {e}"
+    return _VACUUM_OK_TEXT[action]
+
+
 def _vacuum_schema() -> dict:
     return {"type": "function", "function": {
         "name": "vacuum_control",
         "description": (
-            "Керування роботом-пилососом. start/stop/pause/dock (на базу заряджатись)/locate (пікнути, щоб "
-            "знайти). За потреби можна також задати fan_speed. Для стану/заряду/чи прибирає зараз — get_live_state."
+            "Керування роботом-пилососом ЗАРАЗ. start/stop/pause/dock (на базу заряджатись)/locate (пікнути, щоб "
+            "знайти). room — прибрати конкретну кімнату замість усієї квартири (лише з action=start). "
+            "mode — vacuum (без води)/mop (лише швабра)/vac_and_mop. Для запуску НА ПІЗНІШЕ — vacuum_schedule. "
+            "Для стану/заряду/чи прибирає зараз — get_live_state."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": ["start", "stop", "pause", "dock", "locate"]},
-                "fan_speed": {"type": "string", "enum": ["quiet", "balanced", "turbo", "max"],
-                              "description": "Лише якщо користувач явно просить змінити потужність всмоктування"},
+                "room": {"type": "string", "description": "Кімната (напр. 'кухня'); порожньо = вся квартира"},
+                "mode": {"type": "string", "enum": ["vacuum", "mop", "vac_and_mop"],
+                         "description": "vacuum — прибирання без води. Лише якщо користувач явно просить."},
             },
             "required": ["action"],
         },
@@ -1900,19 +1942,61 @@ def _vacuum_schema() -> dict:
 
 def tool_vacuum_control(args: dict) -> str:
     action = args.get("action")
-    service = _VACUUM_SERVICE.get(action)
-    if not service:
-        return "НЕ ЗМІНЕНО. Не зрозумів дію — start, stop, pause, dock чи locate?"
-    try:
-        ha_client.call_service("vacuum", service, VACUUM_ENTITY)
-    except Exception as e:
-        return f"НЕ ЗМІНЕНО. Помилка керування роботом: {e}"
-    if fan_speed := args.get("fan_speed"):
-        try:
-            ha_client.call_service("vacuum", "set_fan_speed", VACUUM_ENTITY, fan_speed=fan_speed)
-        except Exception:
-            pass  # main action already succeeded — a bad fan_speed shouldn't undo it
-    return _VACUUM_OK_TEXT[action]
+    room = (args.get("room") or "").strip()
+    area_id = None
+    if room:
+        area_id = _resolve_area(room)
+        if not area_id:
+            return f"НЕ ЗМІНЕНО. Не знайшов кімнату «{room}» в Home Assistant."
+    result = _do_vacuum_action(action, area_id, args.get("mode"))
+    return f"{result} ({room})" if room and not result.startswith("НЕ ЗМІНЕНО") else result
+
+
+def _vacuum_schedule_schema() -> dict:
+    return {"type": "function", "function": {
+        "name": "vacuum_schedule",
+        "description": (
+            "Запланувати запуск робота-пилососа на потрібний час (time+date або in_minutes) — усю квартиру "
+            "або конкретну кімнату (room), з режимом (mode: vacuum — без води, mop, vac_and_mop). "
+            "Для запуску ЗАРАЗ — vacuum_control, не цей інструмент."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "time": {"type": "string", "description": "Година, напр. '19' чи '8:00'"},
+                "date": {"type": "string", "description": "'сьогодні'/'завтра'/конкретна дата; порожньо = сьогодні"},
+                "in_minutes": {"type": "integer", "description": "Альтернатива time/date — через скільки хвилин"},
+                "room": {"type": "string", "description": "Кімната (напр. 'кухня'); порожньо = вся квартира"},
+                "mode": {"type": "string", "enum": ["vacuum", "mop", "vac_and_mop"], "description": "vacuum — без води"},
+            },
+            "required": [],
+        },
+    }}
+
+
+def tool_vacuum_schedule(args: dict) -> str:
+    now = datetime.datetime.now(_TZ)
+    when, err = _resolve_when(args, now)
+    if err:
+        return "НЕ ЗМІНЕНО. " + err
+    room = (args.get("room") or "").strip()
+    area_id = None
+    if room:
+        area_id = _resolve_area(room)
+        if not area_id:
+            return f"НЕ ЗМІНЕНО. Не знайшов кімнату «{room}» в Home Assistant."
+    mode = args.get("mode")
+    if mode and mode not in ("vacuum", "mop", "vac_and_mop"):
+        return "НЕ ЗМІНЕНО. Режим має бути vacuum, mop або vac_and_mop."
+    label = "Пилосос: " + (room or "вся квартира") + (f", {mode}" if mode else "")
+    calendar, _ = _reminder_calendar_for(users.current())
+    ha_client.call_service_data("calendar", "create_event", calendar, summary=label,
+        description="VACUUM:" + json.dumps({"room": area_id, "mode": mode}),
+        start_date_time=when.strftime("%Y-%m-%d %H:%M:%S"),
+        end_date_time=(when + datetime.timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"))
+    if not _reminder_confirmed(calendar, label, when):
+        return "НЕ ЗМІНЕНО. Команду надіслано, але подія не підтвердилась у календарі."
+    return f"Заплановано: {label} {when:%d.%m о %H:%M}."
 
 
 def _fmt_dur(minutes: float) -> str:
@@ -2133,33 +2217,40 @@ def _reminder_confirmed(calendar: str, summary: str, when: datetime.datetime) ->
     return any(e.get("summary") == summary for e in events)
 
 
+def _resolve_when(args: dict, now: datetime.datetime) -> tuple[datetime.datetime | None, str | None]:
+    """(when, None) or (None, error) — shared by remind_me and vacuum_schedule."""
+    minutes = args.get("in_minutes")
+    if minutes is not None:
+        if not isinstance(minutes, int) or not 1 <= minutes <= 10080:
+            return None, "Вкажи, через скільки хвилин (1–10080)."
+        return now + datetime.timedelta(minutes=minutes), None
+    hm = _parse_clock(args.get("time", ""))
+    if not hm:
+        return None, "Не розпізнав час; вкажи годину, напр. '19' або '19:30', або через скільки хвилин."
+    date_raw = (args.get("date") or "").strip().lower()
+    if date_raw in ("", "сьогодні", "today"):
+        day = now.date()
+    elif date_raw in ("завтра", "tomorrow"):
+        day = now.date() + datetime.timedelta(days=1)
+    else:
+        day = _parse_day(date_raw)
+        if not day:
+            return None, f"Не розпізнав дату '{args.get('date')}'."
+    when = datetime.datetime.combine(day, datetime.time(*hm), tzinfo=_TZ)
+    if not date_raw and when <= now:  # a bare "о 19" already past today means tomorrow, not silently dropped
+        when += datetime.timedelta(days=1)
+    return when, None
+
+
 def tool_remind_me(args: dict) -> str:
     text = (args.get("text") or "").strip()
     if not text:
         return "НЕ ЗМІНЕНО. Що нагадати?"
     calendar, _ = _reminder_calendar_for(users.current())
     now = datetime.datetime.now(_TZ)
-    minutes = args.get("in_minutes")
-    if minutes is not None:
-        if not isinstance(minutes, int) or not 1 <= minutes <= 10080:
-            return "НЕ ЗМІНЕНО. Вкажи, через скільки хвилин (1–10080)."
-        when = now + datetime.timedelta(minutes=minutes)
-    else:
-        hm = _parse_clock(args.get("time", ""))
-        if not hm:
-            return "НЕ ЗМІНЕНО. Не розпізнав час; вкажи годину, напр. '19' або '19:30', або через скільки хвилин."
-        date_raw = (args.get("date") or "").strip().lower()
-        if date_raw in ("", "сьогодні", "today"):
-            day = now.date()
-        elif date_raw in ("завтра", "tomorrow"):
-            day = now.date() + datetime.timedelta(days=1)
-        else:
-            day = _parse_day(date_raw)
-            if not day:
-                return f"НЕ ЗМІНЕНО. Не розпізнав дату '{args.get('date')}'."
-        when = datetime.datetime.combine(day, datetime.time(*hm), tzinfo=_TZ)
-        if not date_raw and when <= now:  # a bare "о 19" already past today means tomorrow, not silently dropped
-            when += datetime.timedelta(days=1)
+    when, err = _resolve_when(args, now)
+    if err:
+        return "НЕ ЗМІНЕНО. " + err
     ha_client.call_service_data("calendar", "create_event", calendar, summary=text,
         start_date_time=when.strftime("%Y-%m-%d %H:%M:%S"), end_date_time=(when + datetime.timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"))
     if not _reminder_confirmed(calendar, text, when):
@@ -2248,9 +2339,6 @@ async def poll_reminders_once() -> None:
     window_start = now - datetime.timedelta(seconds=_REMINDER_POLL_LOOKBACK)
     calendars = {"default": _REMINDER_CAL_DEFAULT, **_reminder_calendar_map()}
     for user, calendar in calendars.items():
-        target = _reminder_notify_target(user)
-        if not target:
-            continue
         try:
             events = ha_client.calendar_events(calendar, window_start.isoformat(), now.isoformat())
         except Exception as e:
@@ -2261,6 +2349,18 @@ async def poll_reminders_once() -> None:
             if not uid or uid in _notified_reminders:
                 continue
             _notified_reminders.add(uid)
+            description = e.get("description") or ""
+            if description.startswith("VACUUM:"):
+                try:
+                    payload = json.loads(description[len("VACUUM:"):])
+                    result = await asyncio.to_thread(_do_vacuum_action, "start", payload.get("room"), payload.get("mode"))
+                    print(f"vacuum schedule fired ({e['summary']}): {result}", flush=True)
+                except Exception as ex:
+                    print(f"vacuum schedule error ({calendar}/{uid}): {ex}", flush=True)
+                continue
+            target = _reminder_notify_target(user)
+            if not target:
+                continue
             try:
                 ha_client.notify(target, "Нагадування", e["summary"])
             except Exception as ex:
@@ -2288,6 +2388,7 @@ DISPATCH = {
     "toloka_search": tool_toloka_search,
     "ha_switch": tool_ha_switch,
     "vacuum_control": tool_vacuum_control,
+    "vacuum_schedule": tool_vacuum_schedule,
     "note_add": tool_note_add,
     "notes_search": tool_notes_search,
     "get_activity_periods": tool_get_activity_periods,

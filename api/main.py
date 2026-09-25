@@ -85,7 +85,8 @@ _CONTROL_LINES = {
         "(перенести/змінити = скасувати старе + поставити нове)\n"
     ),
     "ha_switch": "- ha_switch: увімкнути/вимкнути пристрій (розетку, лампу тощо) — спробуй викликати навіть якщо не певен, чи він у дозволеному списку, інструмент сам скаже, якщо ні; «вимкни, коли закінчиться фільм» = when=after_playback, «через N хвилин» = when=in_minutes, «що заплановано» = status, «скасуй» = cancel (ставить таймер HA)\n",
-    "vacuum_control": "- vacuum_control: керування роботом-пилососом — start/stop/pause/dock/locate, за потреби fan_speed; стан/заряд — get_live_state\n",
+    "vacuum_control": "- vacuum_control: керування роботом-пилососом ЗАРАЗ — start/stop/pause/dock/locate, за потреби room (кімната) і mode (vacuum=без води/mop/vac_and_mop); стан/заряд — get_live_state\n",
+    "vacuum_schedule": "- vacuum_schedule: запланувати запуск пилососа на пізніше (time/date або in_minutes), за потреби room і mode — той самий календар, що й нагадування\n",
     "note_add": "- note_add: записати особисту нотатку користувача; notes_search — знайти його нотатки (чужих не бачиш)\n",
     "grocy_add_stock": "- grocy_add_stock: додати куплене до запасів\n",
     "grocy_product_add": "- grocy_product_add: завести НОВИЙ товар у Grocy з початковим запасом — коли grocy_add_stock каже, що товару ще нема\n",

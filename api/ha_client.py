@@ -74,9 +74,9 @@ def calendar_events(entity_id: str, start_iso: str, end_iso: str) -> list[dict]:
     return r.json()
 
 
-def delete_calendar_event(entity_id: str, uid: str) -> bool:
-    """No REST service for this (local_calendar exposes only create_event/get_events) —
-    the frontend's own calendar card deletes via this websocket command instead."""
+def _ws_command(msg: dict) -> dict:
+    """Run one HA websocket command synchronously — for the handful of things
+    (calendar event delete, area registry) with no plain REST equivalent."""
     import asyncio
     import ssl
 
@@ -91,7 +91,19 @@ def delete_calendar_event(entity_id: str, uid: str) -> bool:
             await ws.recv()
             await ws.send(json.dumps({"type": "auth", "access_token": HA_TOKEN}))
             await ws.recv()
-            await ws.send(json.dumps({"id": 1, "type": "calendar/event/delete", "entity_id": entity_id, "uid": uid}))
+            await ws.send(json.dumps({"id": 1, **msg}))
             return json.loads(await ws.recv())
 
-    return bool(asyncio.run(_call()).get("success"))
+    return asyncio.run(_call())
+
+
+def delete_calendar_event(entity_id: str, uid: str) -> bool:
+    """No REST service for this (local_calendar exposes only create_event/get_events) —
+    the frontend's own calendar card deletes via this websocket command instead."""
+    return bool(_ws_command({"type": "calendar/event/delete", "entity_id": entity_id, "uid": uid}).get("success"))
+
+
+def area_registry() -> list[dict]:
+    """Not exposed over plain REST (/api/config/area_registry -> 404) — same
+    websocket the frontend's own area settings page uses."""
+    return _ws_command({"type": "config/area_registry/list"}).get("result") or []
