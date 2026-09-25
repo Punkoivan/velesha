@@ -571,7 +571,7 @@ def tool_get_sensor_history(args: dict) -> str:
 CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
                  "grocy_consume", "grocy_add_stock", "grocy_shopping_add", "grocy_product_add",
                  "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "recipe_add",
-                 "note_add", "ha_switch", "log_watched_movie", "remind_me", "cancel_reminder"}
+                 "note_add", "ha_switch", "vacuum_control", "log_watched_movie", "remind_me", "cancel_reminder"}
 
 # Answered verbatim, without a second model call (ADR-0024).
 # Administration stays with the admin (ADR-0035); everything else is shared.
@@ -579,6 +579,7 @@ ADMIN_TOOLS = {"qbittorrent_status", "qbittorrent_list", "qbittorrent_add", "tol
 PASSTHROUGH_TOOLS = {"toloka_search", "grocy_recipe_import", "recipe_add", "recipe_cook"}
 _POWER_RE = re.compile(r"(вимкн|вимик|виключ|погас|увімкн|ввімкн|включ|вруб|запал)", re.IGNORECASE)
 _TIMER_RE = re.compile(r"(таймер|заплан|скасу|відміни|відмін)", re.IGNORECASE)
+_VACUUM_RE = re.compile(r"(робот|пилосос|роборок|roborock|прибир)", re.IGNORECASE)
 _COMMAND_RE = re.compile(
     r"(включ|увімкн|ввімкн|запуст|постав|відтвор|\bplay\b|пауз|продовж|зупин|стоп|наступн|попередн|далі|пропуст|\bnext\b|\bstop\b|\bpause\b)",
     re.IGNORECASE,
@@ -887,6 +888,8 @@ def tools_for(user_text: str) -> list[dict]:
             tools = tools + [_grocy_recipe_schema(name, desc)]
     if show_all or _POWER_RE.search(text) or _TIMER_RE.search(text):
         tools = tools + [_HA_SWITCH_SCHEMA]
+    if show_all or _VACUUM_RE.search(text):
+        tools = tools + [_vacuum_schema()]
     if show_all or _REMIND_RE.search(text):
         tools = tools + [_remind_me_schema(), _cancel_reminder_schema()]
     if (show_all or _WEB_RE.search(text)) and web_search_available():
@@ -1865,6 +1868,53 @@ def tool_ha_switch(args: dict, user_text: str = "") -> str:
     return text.strip()
 
 
+VACUUM_ENTITY = os.environ.get("VACUUM_ENTITY", "vacuum.roborock_s7")
+_VACUUM_SERVICE = {"start": "start", "stop": "stop", "pause": "pause", "dock": "return_to_base", "locate": "locate"}
+_VACUUM_OK_TEXT = {
+    "start": "Запущено прибирання.",
+    "stop": "Зупинено прибирання.",
+    "pause": "Поставлено на паузу.",
+    "dock": "Запущено повернення на базу.",
+    "locate": "Увімкнено сигнал (пікає), щоб знайти робота.",
+}
+
+
+def _vacuum_schema() -> dict:
+    return {"type": "function", "function": {
+        "name": "vacuum_control",
+        "description": (
+            "Керування роботом-пилососом. start/stop/pause/dock (на базу заряджатись)/locate (пікнути, щоб "
+            "знайти). За потреби можна також задати fan_speed. Для стану/заряду/чи прибирає зараз — get_live_state."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["start", "stop", "pause", "dock", "locate"]},
+                "fan_speed": {"type": "string", "enum": ["quiet", "balanced", "turbo", "max"],
+                              "description": "Лише якщо користувач явно просить змінити потужність всмоктування"},
+            },
+            "required": ["action"],
+        },
+    }}
+
+
+def tool_vacuum_control(args: dict) -> str:
+    action = args.get("action")
+    service = _VACUUM_SERVICE.get(action)
+    if not service:
+        return "НЕ ЗМІНЕНО. Не зрозумів дію — start, stop, pause, dock чи locate?"
+    try:
+        ha_client.call_service("vacuum", service, VACUUM_ENTITY)
+    except Exception as e:
+        return f"НЕ ЗМІНЕНО. Помилка керування роботом: {e}"
+    if fan_speed := args.get("fan_speed"):
+        try:
+            ha_client.call_service("vacuum", "set_fan_speed", VACUUM_ENTITY, fan_speed=fan_speed)
+        except Exception:
+            pass  # main action already succeeded — a bad fan_speed shouldn't undo it
+    return _VACUUM_OK_TEXT[action]
+
+
 def _fmt_dur(minutes: float) -> str:
     m = int(round(minutes))
     return f"{m // 60} год {m % 60} хв" if m >= 60 else f"{m} хв"
@@ -2237,6 +2287,7 @@ DISPATCH = {
     "qbittorrent_add": tool_qbittorrent_add,
     "toloka_search": tool_toloka_search,
     "ha_switch": tool_ha_switch,
+    "vacuum_control": tool_vacuum_control,
     "note_add": tool_note_add,
     "notes_search": tool_notes_search,
     "get_activity_periods": tool_get_activity_periods,
