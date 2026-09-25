@@ -625,10 +625,8 @@ _GROCY_SHOP_RE = re.compile(r"(список покупок|списку поку
 _GROCY_COOK_RE = re.compile(r"(приготував|приготувала|зварив|зварила|спік|спекла|засмажив|засмажила)", re.IGNORECASE)
 _GROCY_RSHOP_RE = re.compile(r"(список покупок|списку покупок|додай.*не вистача|не вистача.*додай)", re.IGNORECASE)
 _GROCY_IMPORT_RE = re.compile(
-    r"(додай|додати|перенеси|перенести|занеси|імпортуй|закинь|запиши|запам'ятай|запамятай|"
-    r"занотуй|збережи|зберегти).*рецепт|"
-    r"рецепт.*(додай|додати|перенеси|перенести|занеси|імпортуй|закинь|запиши|запам'ятай|запамятай|"
-    r"занотуй|збережи|зберегти)|"
+    r"(дода|перенес|занес|імпорт|закин|запиш|запам'?ята|занот|збере).*рецепт|"
+    r"рецепт.*(дода|перенес|занес|імпорт|закин|запиш|запам'?ята|занот|збере)|"
     r"рецепт.*(grocy|гроч|грок)|(grocy|гроч|грок).*рецепт", re.IGNORECASE)
 _CONFIRM_RE = re.compile(
     r"(так\b|\bок\b|окей|добре|давай|підтверджую|запис(уй|уємо|ати)|роби|створюй|додавай|додай|"
@@ -835,6 +833,13 @@ def tools_for(user_text: str) -> list[dict]:
     # Read-only and cheap, so always offered: a word gate looked only at the
     # latest message and lost the request in multi-turn talk (ADR-0029).
     tools = tools + [_toloka_search_schema(), _get_reminders_schema(), _notes_search_schema()]
+    # grocy_recipe_import/recipe_add write, but only behind their own
+    # draft+confirm+title-match gate (never on the first call) — so, same
+    # reasoning as ADR-0029, always offered rather than word-gated. A regex
+    # gate here kept missing real phrasing ("запишемо" vs "запиши", a
+    # "рецепт" mentioned turns ago, a 5-word confirmation) and the model
+    # fell back to note_add, the only tool it still had.
+    tools = tools + [_GROCY_IMPORT_SCHEMA, _GROCY_MISSING_SCHEMA, _recipe_add_schema()]
     # get_watched_movies is already unconditionally in TOOLS (not a CONTROL_TOOL) — do not re-add it.
     if _LOG_MOVIE_RE.search(text):
         tools = tools + [_log_watched_movie_schema()]
@@ -842,15 +847,13 @@ def tools_for(user_text: str) -> list[dict]:
         if gate.search(text):  # state-changing: only on an explicit phrase (ADR-0032)
             tools = tools + [_grocy_action_schema(name, desc)]
     short_reply = len(text.split()) <= 4
+    if _GROCY_IMPORT_RE.search(text):
+        # Keeps the 60-min "recipe conversation" window alive (_fresh_import_ctx,
+        # ADR-0033) even on a turn where the model doesn't call a tool yet
+        # (still gathering title/ingredients) — used below and in adk_agent.py
+        # to keep a bare dish name from being mistaken for a film title.
+        _rs()["ctx_at"] = time.time()
     in_import = _fresh_import_ctx() and short_reply
-    # A fresh draft alone is enough to keep offering these — the write itself
-    # still needs confirm=true + a real confirmation word + a title match
-    # (see tool_grocy_recipe_import/tool_recipe_add). Requiring a confirm-word
-    # match here too meant "все вірно, записуємо" (no listed word at the very
-    # start) got no tool at all and the model apologized for a missing tool
-    # that was never really missing.
-    if _GROCY_IMPORT_RE.search(text) or in_import or _fresh_recipe_draft():
-        tools = tools + [_GROCY_IMPORT_SCHEMA, _GROCY_MISSING_SCHEMA, _recipe_add_schema()]
     if in_import:  # a bare dish name mid-import is not a film title or a torrent
         tools = [x for x in tools if x["function"]["name"] not in ("toloka_search",)]
     for name, (desc, gate) in _GROCY_RECIPE_SCHEMAS.items():
