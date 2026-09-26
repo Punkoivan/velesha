@@ -579,7 +579,7 @@ CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
 # Administration stays with the admin (ADR-0035); everything else is shared.
 ADMIN_TOOLS = {"qbittorrent_status", "qbittorrent_list", "qbittorrent_add", "toloka_search", "toloka_add"}
 PASSTHROUGH_TOOLS = {"toloka_search", "grocy_recipe_import", "recipe_add", "recipe_cook"}
-_POWER_RE = re.compile(r"(вимкн|вимик|виключ|погас|увімкн|ввімкн|включ|вруб|запал)", re.IGNORECASE)
+_POWER_RE = re.compile(r"(вимкн|вимик|виключ|погас|увімкн|ввімкн|вмикн|вмик|включ|вруб|запал)", re.IGNORECASE)
 _TIMER_RE = re.compile(r"(таймер|заплан|скасу|відміни|відмін)", re.IGNORECASE)
 _VACUUM_RE = re.compile(r"(робот|пилосос|роборок|roborock|прибир)", re.IGNORECASE)
 _COMMAND_RE = re.compile(
