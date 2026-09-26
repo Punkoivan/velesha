@@ -583,7 +583,8 @@ _POWER_RE = re.compile(r"(вимкн|вимик|виключ|погас|увім
 _TIMER_RE = re.compile(r"(таймер|заплан|скасу|відміни|відмін)", re.IGNORECASE)
 _VACUUM_RE = re.compile(r"(робот|пилосос|роборок|roborock|прибир)", re.IGNORECASE)
 _COMMAND_RE = re.compile(
-    r"(включ|увімкн|ввімкн|запуст|постав|відтвор|\bplay\b|пауз|продовж|зупин|стоп|наступн|попередн|далі|пропуст|\bnext\b|\bstop\b|\bpause\b)",
+    r"(включ|увімкн|ввімкн|вмикн|вмик|запуст|постав|відтвор|\bplay\b|пауз|продовж|зупин|стоп|наступн|"
+    r"попередн|далі|пропуст|перенес|принес|\bnext\b|\bstop\b|\bpause\b)",
     re.IGNORECASE,
 )
 # "Розкажи, що ти вмієш" — without this, the system prompt only describes
