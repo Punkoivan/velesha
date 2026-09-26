@@ -57,9 +57,11 @@ _CONTROL_LINES = {
         "- jellyfin_play: запустити на дозволеній сесії (не лише Kodi — дивись jellyfin_sessions(list), "
         "дозволені описані в назві пристрою/клієнта): jellyfin_search → id фільму; для серіалу "
         "jellyfin_tv_shows (next unplayed) → id серії. Немає потрібної сесії (пристрій вимкнений/не відкрито) — "
-        "так і скажи. «Перенеси сесію з X на Y» = візьми з jellyfin_sessions для X і item_id, і "
+        "так і скажи. «Перенеси сесію з X на Y» = візьми з jellyfin_sessions для X item_id і "
         "PlayState.PositionTicks, виклич jellyfin_play на session_id пристрою Y з тим самим item_id і "
-        "start_position_ticks = ця позиція (щоб продовжити з того самого місця, не спочатку) — не відмовляй одразу, спробуй\n"
+        "start_position_ticks = ця позиція (щоб продовжити з того самого місця, не спочатку). Якщо на Y вже "
+        "щось грає ІНШЕ — це нормально, PlayNow його замінює, саме це й означає «перенеси»; не питай "
+        "підтвердження і не відмовляйся через це. X і Y названі прямо користувачем — не плутай, хто джерело, а хто ціль\n"
     ),
     "jellyfin_playback_control": (
         "- jellyfin_playback_control: пауза (Pause), продовжити (Unpause), зупинити (Stop), "
