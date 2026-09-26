@@ -11,6 +11,7 @@ export CHAT_REASONING=none   # gpt-5.6-luna refuses function tools without this 
 export LOG_CALLER_PROMPT=1
 export REMINDER_NOTIFY_DEFAULT=notify.mobile_app_punkas26  # server-side reminder push, not the HA calendar automation (ADR-0049)
 export JELLYFIN_PLAY_ALLOW=kodi,firefox  # playback targets allowed besides Kodi — laptop's Jellyfin Web session (ADR-0052)
+export TELEGRAM_CHAT_ID_DEFAULT=333751480  # Telegram notification channel alongside HA notify (ADR-0054)
 
 exec sops exec-env "$ROOT/secrets.enc.env" \
   "sops --config /dev/null exec-env $ROOT/api/secrets.enc.env 'exec uv run uvicorn main:app --host 0.0.0.0 --port 8090'"

@@ -26,6 +26,7 @@ import grocy_client
 import movies_db
 import ha_client
 import jellyfin_client
+import telegram_client
 import qbit_client
 import toloka_client
 import users
@@ -2274,9 +2275,10 @@ def tool_remind_me(args: dict) -> str:
     if not _reminder_confirmed(calendar, text, when):
         return "НЕ ЗМІНЕНО. Команду надіслано, але нагадування не підтвердилось у календарі."
     note = ""
-    if not _reminder_notify_target(users.current()):
-        note = (f" (адміністратору: постав REMINDER_NOTIFY_{users.current().upper()}=notify.<пристрій>, "
-                f"інакше push не прийде — подія в календарі є, доставку веде сам сервер, не автоматизація HA)")
+    if not _reminder_notify_target(users.current()) and not _telegram_chat_id(users.current()):
+        note = (f" (адміністратору: постав REMINDER_NOTIFY_{users.current().upper()} або "
+                f"TELEGRAM_CHAT_ID_{users.current().upper()}, інакше push не прийде — подія в календарі є, "
+                f"доставку веде сам сервер, не автоматизація HA)")
     return f"Заплановано нагадування: «{text}» {when:%d.%m о %H:%M}.{note}"
 
 
@@ -2336,6 +2338,10 @@ def _reminder_notify_target(user: str) -> str | None:
     return v.removeprefix("notify.") if v else None
 
 
+def _telegram_chat_id(user: str) -> str | None:
+    return os.environ.get(f"TELEGRAM_CHAT_ID_{user.upper()}")
+
+
 # Delivery lives here, not in an HA automation on the calendar's own "event:
 # start" trigger — that trigger is unreliable for events created shortly
 # before they fire (widely reported HA bug, not just a refresh-interval
@@ -2376,13 +2382,16 @@ async def poll_reminders_once() -> None:
                 except Exception as ex:
                     print(f"vacuum schedule error ({calendar}/{uid}): {ex}", flush=True)
                 continue
-            target = _reminder_notify_target(user)
-            if not target:
-                continue
-            try:
-                ha_client.notify(target, "Нагадування", e["summary"])
-            except Exception as ex:
-                print(f"reminder push error ({calendar}/{uid}): {ex}", flush=True)
+            if target := _reminder_notify_target(user):
+                try:
+                    ha_client.notify(target, "Нагадування", e["summary"])
+                except Exception as ex:
+                    print(f"reminder push error ({calendar}/{uid}): {ex}", flush=True)
+            if chat_id := _telegram_chat_id(user):
+                try:
+                    telegram_client.send_message(chat_id, f"Нагадування: {e['summary']}")
+                except Exception as ex:
+                    print(f"telegram push error ({calendar}/{uid}): {ex}", flush=True)
     if len(_notified_reminders) > 1000:  # one-off uids, never revisited — cheap cap, not a real cache
         _notified_reminders.clear()
 
