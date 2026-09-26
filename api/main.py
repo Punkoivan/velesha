@@ -54,13 +54,15 @@ CHAT_REASONING = os.environ.get("CHAT_REASONING") or None
 
 _CONTROL_LINES = {
     "jellyfin_play": (
-        "- jellyfin_play: запустити на сесії Kodi: спершу jellyfin_sessions(list) → session_id Kodi; "
-        "jellyfin_search → id фільму; для серіалу jellyfin_tv_shows (next unplayed) → id серії. "
-        "Немає сесії Kodi (вимкнений) — так і скажи\n"
+        "- jellyfin_play: запустити на дозволеній сесії (не лише Kodi — дивись jellyfin_sessions(list), "
+        "дозволені описані в назві пристрою/клієнта): jellyfin_search → id фільму; для серіалу "
+        "jellyfin_tv_shows (next unplayed) → id серії. Немає потрібної сесії (пристрій вимкнений/не відкрито) — "
+        "так і скажи. «Перенеси сесію з X на Y» = візьми поточний item з jellyfin_sessions для X і виклич "
+        "jellyfin_play з тим самим item на session_id пристрою Y — не відмовляй одразу, спробуй\n"
     ),
     "jellyfin_playback_control": (
         "- jellyfin_playback_control: пауза (Pause), продовжити (Unpause), зупинити (Stop), "
-        "NextTrack/PreviousTrack, Seek, гучність — для сесії Kodi з jellyfin_sessions\n"
+        "NextTrack/PreviousTrack, Seek, гучність — для дозволеної сесії з jellyfin_sessions\n"
     ),
     "jellyfin_user_data": (
         "- jellyfin_user_data: позначити переглянутим (mark_played) або зняти позначку (mark_unplayed) "
@@ -125,8 +127,8 @@ def system_prompt(offered: set[str]) -> str:
         "- jellyfin_search: чи Є фільм/серіал у бібліотеці Jellyfin за назвою (точний пошук); "
         "jellyfin_browse (за жанром, роком, студією, актором, «переглянуто»), jellyfin_tv_shows (сезони, серії, "
         "наступна непереглянута), jellyfin_people, jellyfin_recommendations, jellyfin_get_item, jellyfin_analytics\n"
-        "- jellyfin_sessions: що зараз відтворюється на Kodi; у відповіді вже є порахований кодом «Залишок» — "
-        "переказуй його, сам не рахуй\n"
+        "- jellyfin_sessions: що зараз відтворюється на дозволених пристроях (Kodi/ноутбук тощо); у відповіді "
+        "вже є порахований кодом «Залишок» — переказуй його, сам не рахуй\n"
         "- get_live_state: ПОТОЧНЕ значення будь-якого пристрою, сенсора чи лічильника "
         "(відчинені двері, температура, скільки запитів заблокував AdGuard зараз) — "
         "не для минулих подій 'коли востаннє' і не для підрахунку за конкретну дату\n"
