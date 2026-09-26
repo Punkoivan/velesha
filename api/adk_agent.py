@@ -97,7 +97,11 @@ JF_MARK = {"jellyfin_user_data"}  # only with a mark/unmark phrase
 JF_WRITE = JF_PLAY | JF_MARK
 PLAY_COMMANDS = {"Pause", "Unpause", "Stop", "NextTrack", "PreviousTrack", "Seek", "Mute", "Unmute", "ToggleMute", "SetVolume"}
 MARK_ACTIONS = {"mark_played", "mark_unplayed", "get_user_data"}
-KODI = "kodi"  # the only device playback may ever be sent to (ADR-0021)
+# Devices playback may be sent to — a hard allowlist (matched against
+# "DeviceName Client".lower()), not "any session" (ADR-0021). Configurable
+# like HA_CONTROL_ALLOW (ADR-0039) since it's no longer Kodi-only — a laptop's
+# Jellyfin Web session can be a legitimate target too.
+JELLYFIN_PLAY_ALLOW = [d.strip().lower() for d in os.environ.get("JELLYFIN_PLAY_ALLOW", "kodi").split(",") if d.strip()]
 _MARK_RE = re.compile(r"(познач|відміт|проставл|проставт|проставити|галочк|зніми\s+(позначк|мітк|галочк))", re.IGNORECASE)
 _UNMARK_RE = re.compile(r"(зніми|скасуй|прибери|не\s+(переглянут|дивив|бачив))", re.IGNORECASE)
 
@@ -254,8 +258,8 @@ class Engine:
         sessions = await asyncio.to_thread(jellyfin_client.sessions)
         target = next((s for s in sessions if s.get("Id") == args.get("session_id")), None)
         label = f"{(target or {}).get('DeviceName', '')} {(target or {}).get('Client', '')}".lower()
-        if not target or KODI not in label:
-            return "Керувати можна лише сесією Kodi."
+        if not target or not any(d in label for d in JELLYFIN_PLAY_ALLOW):
+            return "Керувати можна лише дозволеними пристроями (" + ", ".join(JELLYFIN_PLAY_ALLOW) + ")."
         return None
 
     def _after_tool(self, tool, args, tool_context, tool_response):
