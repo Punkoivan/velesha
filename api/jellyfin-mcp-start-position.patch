@@ -1,0 +1,34 @@
+diff --git a/internal/jellyfin/types.go b/internal/jellyfin/types.go
+index 1ca2a43..9cb9b56 100644
+--- a/internal/jellyfin/types.go
++++ b/internal/jellyfin/types.go
+@@ -116,10 +116,11 @@ type PlaybackControlInput struct {
+ }
+ 
+ type PlayInput struct {
+-	SessionID   string   `json:"session_id" jsonschema:"Target session ID (get from jellyfin_sessions list action)"`
+-	ItemIDs     []string `json:"item_ids" jsonschema:"Ordered list of item IDs to play"`
+-	PlayCommand string   `json:"play_command,omitempty" jsonschema:"Queue mode: PlayNow (replace queue and start, default), PlayNext (insert after current), PlayLast (append to end)"`
+-	StartIndex  *int     `json:"start_index,omitempty" jsonschema:"Index in item_ids to start from (default 0)"`
++	SessionID           string `json:"session_id" jsonschema:"Target session ID (get from jellyfin_sessions list action)"`
++	ItemIDs             []string `json:"item_ids" jsonschema:"Ordered list of item IDs to play"`
++	PlayCommand         string `json:"play_command,omitempty" jsonschema:"Queue mode: PlayNow (replace queue and start, default), PlayNext (insert after current), PlayLast (append to end)"`
++	StartIndex          *int   `json:"start_index,omitempty" jsonschema:"Index in item_ids to start from (default 0)"`
++	StartPositionTicks  *int64 `json:"start_position_ticks,omitempty" jsonschema:"Resume position in ticks (1 tick = 100ns) for the first item — e.g. to continue playback transferred from another session"`
+ }
+ 
+ type SyncPlayInput struct {
+diff --git a/internal/server/tools/playback.go b/internal/server/tools/playback.go
+index 4865ede..e1ac07b 100644
+--- a/internal/server/tools/playback.go
++++ b/internal/server/tools/playback.go
+@@ -229,6 +229,9 @@ func RegisterPlaybackTools(server *mcp.Server, client jf.Client, enabled func(st
+ 			if args.StartIndex != nil {
+ 				params.Set("StartIndex", fmt.Sprintf("%d", *args.StartIndex))
+ 			}
++			if args.StartPositionTicks != nil {
++				params.Set("StartPositionTicks", fmt.Sprintf("%d", *args.StartPositionTicks))
++			}
+ 			endpoint := fmt.Sprintf("/Sessions/%s/Playing", jf.SanitizeID(args.SessionID))
+ 
+ 			if err := client.PostNoContent(ctx, endpoint, params, nil); err != nil {

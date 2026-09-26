@@ -29,9 +29,11 @@
 - **Несумісність з Jellyfin 12.1:** сервер автентифікується заголовком
   `X-MediaBrowser-Token`, який Jellyfin 12.1.0 відхиляє (401; `X-Emby-Token` так
   само). Працює `Authorization: MediaBrowser Token="…"`. Локальний патч —
-  `api/jellyfin-mcp-auth-header.patch` (2 рядки). Бінарник збирається так:
-  `git clone … && git checkout 307e28e && git apply <patch> && go build -o api/bin/jellyfin-mcp .`
-  (`api/bin/` у .gitignore). Варто надіслати PR у upstream.
+  `api/jellyfin-mcp-auth-header.patch` (2 рядки). Другий локальний патч —
+  `api/jellyfin-mcp-start-position.patch` (ADR-0053, `start_position_ticks`
+  для `jellyfin_play`). Бінарник збирається так:
+  `git clone … && git checkout 307e28e && git apply api/jellyfin-mcp-auth-header.patch && git apply api/jellyfin-mcp-start-position.patch && go build -o api/bin/jellyfin-mcp .`
+  (`api/bin/` у .gitignore). Варто надіслати обидва як PR у upstream.
 - MCP працює лише в ADK: `AGENT_ENGINE` за замовчуванням тепер `adk`; старий рушій
   лишився в коді без Jellyfin (далі його варто видалити).
 
