@@ -1893,10 +1893,7 @@ _area_registry_cache: dict[str, list[dict]] = {}
 _AREA_CACHE_TTL = 10 * 60
 
 
-def _resolve_area(name: str) -> tuple[str | None, str | None]:
-    """(area_id, None) on a clear match, (None, error) otherwise — never guess
-    between ambiguous rooms (this household has both "Зала" and "Вітальня
-    Дніпро", both loosely matching "вітальня")."""
+def _areas() -> list[dict]:
     now = time.time()
     if not _area_registry_cache or now - _area_registry_cache.get("at", 0) > _AREA_CACHE_TTL:
         try:
@@ -1904,10 +1901,19 @@ def _resolve_area(name: str) -> tuple[str | None, str | None]:
             _area_registry_cache["at"] = now
         except Exception as e:
             print(f"area registry fetch error: {e}", flush=True)
-            return None, f"Не вдалось перевірити список кімнат: {e}"
+    return _area_registry_cache.get("areas", [])
+
+
+def _resolve_area(name: str) -> tuple[str | None, str | None]:
+    """(area_id, None) on a clear match, (None, error) otherwise — never guess
+    between ambiguous rooms (this household has both "Зала" and "Вітальня
+    Дніпро", both loosely matching "вітальня")."""
+    areas = _areas()
+    if not areas:
+        return None, "Не вдалось перевірити список кімнат Home Assistant."
     name_l = name.lower().strip()
     exact, fuzzy = [], []
-    for area in _area_registry_cache.get("areas", []):
+    for area in areas:
         candidates = [area["name"].lower()] + [a.lower() for a in area.get("aliases", []) if a]
         if name_l in candidates:
             exact.append(area)
@@ -1921,7 +1927,28 @@ def _resolve_area(name: str) -> tuple[str | None, str | None]:
     return matches[0]["area_id"], None
 
 
-def _do_vacuum_action(action: str, area_id: str | None = None, mode: str | None = None) -> str:
+def _area_name(area_id: str) -> str | None:
+    return next((a["name"] for a in _areas() if a["area_id"] == area_id), None)
+
+
+def _notify_vacuum_start(area_id: str | None, mode: str | None, user: str | None = None) -> None:
+    """Best-effort: a scheduled/voice-triggered clean starting is worth
+    knowing about even if nobody's watching the app when it happens.
+    `user` must be passed explicitly when called from the poller loop —
+    users.current() there would reflect whatever the last real HTTP
+    request set it to, not the calendar actually being processed."""
+    chat_id = _telegram_chat_id(user if user is not None else users.current())
+    if not chat_id:
+        return
+    where = _area_name(area_id) if area_id else "вся квартира"
+    text = f"Пилосос почав прибирання: {where}" + (f", режим {mode}" if mode else "")
+    try:
+        telegram_client.send_message(chat_id, text)
+    except Exception as e:
+        print(f"vacuum start telegram notify error: {e}", flush=True)
+
+
+def _do_vacuum_action(action: str, area_id: str | None = None, mode: str | None = None, user: str | None = None) -> str:
     # Retry-on-transient-failure lives in ha_client._request now (used by every
     # HA call, not just this one) — see ADR-0055.
     service = _VACUUM_SERVICE.get(action)
@@ -1936,6 +1963,8 @@ def _do_vacuum_action(action: str, area_id: str | None = None, mode: str | None 
             ha_client.call_service("vacuum", service, VACUUM_ENTITY)
     except Exception as e:
         return f"НЕ ЗМІНЕНО. Помилка керування роботом: {e}"
+    if action == "start":
+        _notify_vacuum_start(area_id, mode, user)
     return _VACUUM_OK_TEXT[action]
 
 
@@ -2379,7 +2408,7 @@ async def poll_reminders_once() -> None:
             if description.startswith("VACUUM:"):
                 try:
                     payload = json.loads(description[len("VACUUM:"):])
-                    result = await asyncio.to_thread(_do_vacuum_action, "start", payload.get("room"), payload.get("mode"))
+                    result = await asyncio.to_thread(_do_vacuum_action, "start", payload.get("room"), payload.get("mode"), user)
                     print(f"vacuum schedule fired ({e['summary']}): {result}", flush=True)
                 except Exception as ex:
                     print(f"vacuum schedule error ({calendar}/{uid}): {ex}", flush=True)
