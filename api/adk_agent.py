@@ -92,7 +92,7 @@ class PerMessageTools(BaseToolset):
 MCP_BIN = os.environ.get("JELLYFIN_MCP_BIN") or str(pathlib.Path(__file__).parent / "bin" / "jellyfin-mcp")
 JF_READ = {"jellyfin_search", "jellyfin_browse", "jellyfin_get_item", "jellyfin_recommendations",
            "jellyfin_people", "jellyfin_tv_shows", "jellyfin_analytics", "jellyfin_sessions"}
-JF_PLAY = {"jellyfin_play", "jellyfin_playback_control"}  # only with a command phrase
+JF_PLAY = {"jellyfin_play", "jellyfin_playback_control"}  # always offered — see ADR-0058
 JF_MARK = {"jellyfin_user_data"}  # only with a mark/unmark phrase
 JF_WRITE = JF_PLAY | JF_MARK
 PLAY_COMMANDS = {"Pause", "Unpause", "Stop", "NextTrack", "PreviousTrack", "Seek", "Mute", "Unmute", "ToggleMute", "SetVolume"}
@@ -134,7 +134,7 @@ def _jellyfin_filter(tool, readonly_context=None) -> bool:
     if tool.name in JF_READ:
         return True
     if tool.name in JF_PLAY:
-        return bool(legacy._COMMAND_RE.search(text))
+        return True
     if tool.name in JF_MARK:
         return bool(_MARK_RE.search(text))
     return False
@@ -142,9 +142,7 @@ def _jellyfin_filter(tool, readonly_context=None) -> bool:
 
 def jellyfin_names_for(text: str) -> set[str]:
     """Which Jellyfin tools this message gets (for the system prompt)."""
-    names = set(JF_READ)
-    if legacy._COMMAND_RE.search(text):
-        names |= JF_PLAY
+    names = set(JF_READ) | JF_PLAY
     if _MARK_RE.search(text):
         names |= JF_MARK
     return names
