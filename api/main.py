@@ -26,13 +26,16 @@ import time
 import uuid
 
 import requests
-from fastapi import FastAPI, Header
+from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 import guardrails
+import telegram_client
 import users
 from tools import CONTROL_TOOLS, PASSTHROUGH_TOOLS, call_tool, tools_for, reminder_poll_loop
+
+WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN")  # guards inbound webhooks from HA (ADR-0057)
 
 # Local llama-server (always available as the private/fallback lane).
 # Optional hosted model (any OpenAI-compatible endpoint): set CHAT_API_KEY
@@ -195,6 +198,30 @@ def health():
 @app.get("/v1/models")
 def list_models():
     return {"object": "list", "data": [{"id": "velesha", "object": "model", "owned_by": "velesha"}]}
+
+
+@app.post("/webhook/{name}")
+async def webhook(name: str, request: Request, token: str = ""):
+    """Inbound events FROM HA (an automation's rest_command), not the other
+    direction — e.g. "vacuum finished" doesn't fit the reminder-calendar
+    poller (ADR-0049/0056), since it's a state transition HA already knows
+    about the moment it happens. `name` is just a label for the log line;
+    routing is by `name` if this ever needs to do more than one thing.
+    """
+    if not WEBHOOK_TOKEN or token != WEBHOOK_TOKEN:
+        return JSONResponse({"error": "invalid token"}, status_code=403)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    message = (body.get("message") or "").strip() or f"Подія: {name}"
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID_DEFAULT")
+    if chat_id:
+        try:
+            telegram_client.send_message(chat_id, message)
+        except Exception as e:
+            print(f"webhook telegram error ({name}): {e}", flush=True)
+    return {"ok": True}
 
 
 def _complete_local(messages: list[dict], tools: list[dict]) -> dict:
