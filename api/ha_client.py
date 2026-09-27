@@ -6,6 +6,7 @@ api/secrets.enc.env, same instance as sources/home_assistant/ (ADR-0018).
 
 import json
 import os
+import time
 
 import requests
 import urllib3
@@ -28,20 +29,34 @@ _session.headers.update({"Authorization": f"Bearer {HA_TOKEN}", "Content-Type": 
 _session.verify = False
 
 
+def _request(method: str, url: str, *, retries: int = 1, backoff: float = 3, **kwargs) -> requests.Response:
+    """Every plain HTTP call in this module goes through here — one retry
+    after a short pause by default. HA itself answers fast; failures this
+    retry catches are downstream physical/cloud-backed devices (a vacuum
+    still processing the previous command, etc.) that occasionally 500 or
+    time out and then work fine moments later (observed: vacuum_control)."""
+    attempt = 0
+    while True:
+        try:
+            r = _session.request(method, url, **kwargs)
+            r.raise_for_status()
+            return r
+        except Exception:
+            if attempt >= retries:
+                raise
+            attempt += 1
+            time.sleep(backoff)
+
+
 def get_states() -> list[dict]:
-    r = _session.get(f"{HA_URL}/api/states", timeout=15)
-    r.raise_for_status()
-    return r.json()
+    return _request("GET", f"{HA_URL}/api/states", timeout=15).json()
 
 
 def get_history(entity_id: str, start_iso: str, end_iso: str) -> list[dict]:
-    r = _session.get(
-        f"{HA_URL}/api/history/period/{start_iso}",
-        params={"filter_entity_id": entity_id, "end_time": end_iso},
-        timeout=30,
-    )
-    r.raise_for_status()
-    data = r.json()
+    data = _request(
+        "GET", f"{HA_URL}/api/history/period/{start_iso}",
+        params={"filter_entity_id": entity_id, "end_time": end_iso}, timeout=30,
+    ).json()
     return data[0] if data else []
 
 
@@ -49,32 +64,25 @@ def call_service(domain: str, service: str, entity_id: str, **data) -> None:
     # 30s, not 15 — a real device (e.g. a vacuum waking from its dock) can take
     # longer than 15s to acknowledge a service call (observed: vacuum_control
     # timing out on a real Roborock start).
-    r = _session.post(f"{HA_URL}/api/services/{domain}/{service}", json={"entity_id": entity_id, **data}, timeout=30)
-    r.raise_for_status()
+    _request("POST", f"{HA_URL}/api/services/{domain}/{service}", json={"entity_id": entity_id, **data}, timeout=30)
 
 
 def get_state(entity_id: str) -> dict:
-    r = _session.get(f"{HA_URL}/api/states/{entity_id}", timeout=15)
-    r.raise_for_status()
-    return r.json()
+    return _request("GET", f"{HA_URL}/api/states/{entity_id}", timeout=15).json()
 
 
 def call_service_data(domain: str, service: str, target: str, **data) -> None:
-    r = _session.post(f"{HA_URL}/api/services/{domain}/{service}",
-                      json={"entity_id": target, **data}, timeout=30)
-    r.raise_for_status()
+    _request("POST", f"{HA_URL}/api/services/{domain}/{service}", json={"entity_id": target, **data}, timeout=30)
 
 
 def notify(service: str, title: str, message: str) -> None:
     """service is the bare name (e.g. "mobile_app_punkas26"), not "notify.<name>"."""
-    r = _session.post(f"{HA_URL}/api/services/notify/{service}", json={"title": title, "message": message}, timeout=15)
-    r.raise_for_status()
+    _request("POST", f"{HA_URL}/api/services/notify/{service}", json={"title": title, "message": message}, timeout=15)
 
 
 def calendar_events(entity_id: str, start_iso: str, end_iso: str) -> list[dict]:
-    r = _session.get(f"{HA_URL}/api/calendars/{entity_id}", params={"start": start_iso, "end": end_iso}, timeout=15)
-    r.raise_for_status()
-    return r.json()
+    return _request("GET", f"{HA_URL}/api/calendars/{entity_id}",
+                     params={"start": start_iso, "end": end_iso}, timeout=15).json()
 
 
 def _ws_command(msg: dict) -> dict:

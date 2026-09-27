@@ -1921,27 +1921,19 @@ def _resolve_area(name: str) -> tuple[str | None, str | None]:
     return matches[0]["area_id"], None
 
 
-def _call_with_retry(fn, *args, **kwargs) -> None:
-    """One retry after a short pause — a physical/cloud-backed device (Roborock)
-    occasionally 500s while it's still processing the previous command."""
-    try:
-        fn(*args, **kwargs)
-    except Exception:
-        time.sleep(3)
-        fn(*args, **kwargs)
-
-
 def _do_vacuum_action(action: str, area_id: str | None = None, mode: str | None = None) -> str:
+    # Retry-on-transient-failure lives in ha_client._request now (used by every
+    # HA call, not just this one) — see ADR-0055.
     service = _VACUUM_SERVICE.get(action)
     if not service:
         return "НЕ ЗМІНЕНО. Не зрозумів дію — start, stop, pause, dock чи locate?"
     try:
         if mode:
-            _call_with_retry(ha_client.call_service, "select", "select_option", VACUUM_MODE_ENTITY, option=mode)
+            ha_client.call_service("select", "select_option", VACUUM_MODE_ENTITY, option=mode)
         if action == "start" and area_id:
-            _call_with_retry(ha_client.call_service_data, "vacuum", "clean_area", VACUUM_ENTITY, cleaning_area_id=[area_id])
+            ha_client.call_service_data("vacuum", "clean_area", VACUUM_ENTITY, cleaning_area_id=[area_id])
         else:
-            _call_with_retry(ha_client.call_service, "vacuum", service, VACUUM_ENTITY)
+            ha_client.call_service("vacuum", service, VACUUM_ENTITY)
     except Exception as e:
         return f"НЕ ЗМІНЕНО. Помилка керування роботом: {e}"
     return _VACUUM_OK_TEXT[action]
