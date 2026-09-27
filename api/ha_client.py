@@ -46,7 +46,10 @@ def get_history(entity_id: str, start_iso: str, end_iso: str) -> list[dict]:
 
 
 def call_service(domain: str, service: str, entity_id: str, **data) -> None:
-    r = _session.post(f"{HA_URL}/api/services/{domain}/{service}", json={"entity_id": entity_id, **data}, timeout=15)
+    # 30s, not 15 — a real device (e.g. a vacuum waking from its dock) can take
+    # longer than 15s to acknowledge a service call (observed: vacuum_control
+    # timing out on a real Roborock start).
+    r = _session.post(f"{HA_URL}/api/services/{domain}/{service}", json={"entity_id": entity_id, **data}, timeout=30)
     r.raise_for_status()
 
 
@@ -58,7 +61,7 @@ def get_state(entity_id: str) -> dict:
 
 def call_service_data(domain: str, service: str, target: str, **data) -> None:
     r = _session.post(f"{HA_URL}/api/services/{domain}/{service}",
-                      json={"entity_id": target, **data}, timeout=15)
+                      json={"entity_id": target, **data}, timeout=30)
     r.raise_for_status()
 
 
