@@ -32,7 +32,10 @@ from pydantic import BaseModel
 
 import guardrails
 import telegram_client
+import telemetry
 import users
+
+telemetry.setup()  # as early as possible — before tools/adk_agent touch google.adk's own tracer
 from tools import CONTROL_TOOLS, PASSTHROUGH_TOOLS, call_tool, tools_for, reminder_poll_loop
 
 WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN")  # guards inbound webhooks from HA (ADR-0057)
@@ -162,6 +165,7 @@ def system_prompt(offered: set[str]) -> str:
     )
 
 app = FastAPI(title="Velesha API")
+telemetry.instrument_fastapi(app)
 
 
 @app.on_event("startup")
