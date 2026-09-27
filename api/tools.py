@@ -584,7 +584,7 @@ _POWER_RE = re.compile(r"(вимкн|вимик|виключ|погас|увім
 _TIMER_RE = re.compile(r"(таймер|заплан|скасу|відміни|відмін)", re.IGNORECASE)
 _VACUUM_RE = re.compile(r"(робот|пилосос|роборок|roborock|прибир)", re.IGNORECASE)
 _COMMAND_RE = re.compile(
-    r"(включ|увімкн|ввімкн|вмикн|вмик|запуст|постав|відтвор|\bplay\b|пауз|продовж|зупин|стоп|наступн|"
+    r"(включ|увімкн|ввімкн|вмикн|вмик|переключ|запуст|постав|відтвор|\bplay\b|пауз|продовж|зупин|стоп|наступн|"
     r"попередн|далі|пропуст|перенес|принес|\bnext\b|\bstop\b|\bpause\b)",
     re.IGNORECASE,
 )
@@ -632,7 +632,7 @@ _ADD_VERB_RE = re.compile(
     r"(додай|додати|завантаж|скач|качай|постав|давай|бери|візьми|обер|вибер|варіант|номер|№|\b[1-8]\b|"
     r"перш|друг|трет|четвер|п'ят)", re.IGNORECASE)
 _GROCY_CONSUME_RE = re.compile(r"(використав|використала|витратив|витратила|списав|списала|з'їв|з'їла|випив|випила|закінчив|закінчил)", re.IGNORECASE)
-_GROCY_ADD_RE = re.compile(r"(купив|купила|докупив|докупила|поклав|поклала|поповни|прибав|додай до запас|додати до запас)", re.IGNORECASE)
+_GROCY_ADD_RE = re.compile(r"(купив|купила|докупив|докупила|поклав|поклала|поповни|прибав|дода)", re.IGNORECASE)
 # Broader than _GROCY_ADD_RE on purpose: creating a brand-new product is a
 # different (and less predictable) natural phrasing than restocking an
 # existing one ("додай товар", "заведи в перелік", "додай в grocy") —
