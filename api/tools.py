@@ -130,21 +130,30 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "qbittorrent_list",
-            "description": "Список торрентів, які ВЖЕ додані в qBittorrent користувача, за фільтром (назва, ratio, віддано за сесію, категорія). НЕ для пошуку нового фільму.",
+            "description": (
+                "Список торрентів, які ВЖЕ додані в qBittorrent користувача: пошук за назвою (query) і/або фільтр "
+                "(ratio, віддано за сесію, що качається, помилки). Для «знайди торент X серед моїх», «чи є в мене X», "
+                "«як там X качається». НЕ для пошуку нового фільму."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Частина назви. Назви торрентів переважно ОРИГІНАЛЬНІ англійські (Killers.of.the.Flower.Moon) — передавай оригінальну назву фільму англійською, навіть якщо користувач назвав українською",
+                    },
                     "filter": {
                         "type": "string",
-                        "enum": ["zero_ratio", "zero_session", "downloading", "problems"],
+                        "enum": ["all", "zero_ratio", "zero_session", "downloading", "problems"],
                         "description": (
+                            "all — усі торренти (для пошуку за назвою); "
                             "zero_ratio — «роздачі з рейтингом 0»: готові торренти, які за весь час нікому не віддавали (ratio 0) — обирай це за замовчуванням; "
                             "zero_session — ЛИШЕ якщо користувач прямо питає про цю сесію: готові, що не віддавали за сесію; "
                             "downloading — що зараз качається; problems — помилки/пауза"
                         ),
                     },
                 },
-                "required": ["filter"],
+                "required": [],
             },
         },
     },
@@ -971,10 +980,32 @@ def tool_qbittorrent_status(args: dict) -> str:
     )
 
 
+_STATE_UA = {
+    "uploading": "роздається", "stalledUP": "роздається", "forcedUP": "роздається", "queuedUP": "в черзі на роздачу",
+    "downloading": "качається", "stalledDL": "качається (нема сідів)", "forcedDL": "качається",
+    "metaDL": "отримує метадані", "queuedDL": "в черзі", "pausedDL": "на паузі", "stoppedDL": "на паузі",
+    "pausedUP": "готовий, зупинений", "stoppedUP": "готовий, зупинений", "error": "помилка",
+    "missingFiles": "нема файлів", "checkingDL": "перевіряється", "checkingUP": "перевіряється",
+}
+
+
+def _name_matches(name: str, query: str) -> bool:
+    """Every word of the query (3+ chars) must appear in the name, ignoring
+    case and the dots/underscores release names use instead of spaces."""
+    norm = re.sub(r"[._\-\[\]()]+", " ", name).lower()
+    words = [w for w in re.findall(r"\w+", query.lower()) if len(w) >= 3] or [query.lower()]
+    return all(w in norm for w in words)
+
+
 def tool_qbittorrent_list(args: dict) -> str:
-    kind = args.get("filter", "")
+    kind = args.get("filter") or "all"
+    query = (args.get("query") or "").strip()
     ts = qbit_client.torrents()
-    if kind == "zero_ratio":
+    if query:
+        ts = [t for t in ts if _name_matches(t["name"], query)]
+    if kind == "all":
+        rows = ts
+    elif kind == "zero_ratio":
         rows = [t for t in ts if _done(t) and t["ratio"] == 0]
     elif kind == "zero_session":
         rows = [t for t in ts if _done(t) and t.get("uploaded_session", 0) == 0]
@@ -985,9 +1016,9 @@ def tool_qbittorrent_list(args: dict) -> str:
     else:
         return f"Невідомий фільтр '{kind}'."
     if not rows:
-        return "Таких торрентів немає."
+        return f"Торрентів за запитом «{query}» немає." if query else "Таких торрентів немає."
     lines = [
-        f"{t['name'][:70]} — ratio {t['ratio']:.2f}, віддано за сесію {_gib(t.get('uploaded_session', 0))}, "
+        f"{t['name'][:70]} — {_STATE_UA.get(t['state'], t['state'])}, {t.get('progress', 0) * 100:.0f}%, ratio {t['ratio']:.2f}, віддано за сесію {_gib(t.get('uploaded_session', 0))}, "
         f"віддано загалом {_gib(t.get('uploaded', 0))}, "
         f"категорія {t['category'] or '—'}, {_gib(t['size'])}"
         for t in rows[:10]

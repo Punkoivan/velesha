@@ -40,3 +40,21 @@ no-op, нічого не ламається без колектора.
   автоматично трасуються; сам `jellyfin-mcp` (окремий Go-процес) і
   локальний `llama-server` (embedding) не інструментовані — окрема
   робота, якщо знадобиться.
+
+## Доповнення: Phoenix і OpenInference (2026-09-28)
+
+MLflow розбирав трейси нормально, а Phoenix — ні: він читає не
+`gen_ai.*`, а атрибути **OpenInference** (`openinference.span.kind`,
+`input.value`/`output.value`, `llm.input_messages.*`, `tool.*`).
+
+Рішення — `openinference-instrumentation-google-adk`:
+`GoogleADKInstrumentor().instrument(tracer_provider=...)` у
+`telemetry.setup()`. Він підміняє трейсер ADK власним, але все одно
+викликає ADK-шні `trace_call_llm`/`trace_tool_call`, тож кожен спан
+несе обидва набори атрибутів (перевірено in-memory експортером на
+реальному запиті: `invocation`=CHAIN, `agent_run`=AGENT,
+`call_llm`=LLM, `execute_tool`=TOOL, `gen_ai.*` на місці) — і MLflow,
+і Phoenix парсять.
+
+Ціна: промпти пишуться у спан двічі (важчі спани); ліміт 4 КБ на
+атрибут обрізає довгий системний промпт у `llm.input_messages.*`.
