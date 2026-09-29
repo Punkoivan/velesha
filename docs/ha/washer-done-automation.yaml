@@ -1,0 +1,31 @@
+# HA: сповістити через Велешу (Telegram), коли пралка завершила цикл (ADR-0060).
+# Пралка — на розумній розетці, кінець циклу видно лише з потужності
+# sensor.pralka_zhyvlennya: простій ≈3 Вт, прання 20–1800 Вт, короткі провали
+# до 3 Вт посеред циклу — до ~200 с (історія 19–29.09.2026).
+#
+# Потрібна rest_command.velesha_webhook у configuration.yaml (див. ADR-0060).
+alias: Пралка — сповістити про завершення
+description: Потужність пралки впала нижче 5 Вт на 5 хв після роботи → вебхук Велеші
+mode: single
+max_exceeded: silent  # під час циклу потужність постійно перетинає 20 Вт — нові тригери ігноруємо
+triggers:
+  - trigger: numeric_state
+    entity_id: sensor.pralka_zhyvlennya
+    above: 20
+actions:
+  - variables:
+      started: "{{ now().isoformat() }}"
+  - wait_for_trigger:
+      - trigger: numeric_state
+        entity_id: sensor.pralka_zhyvlennya
+        below: 5
+        for: "00:05:00"
+    timeout: "05:00:00"
+    continue_on_timeout: false
+  # Поворот ручки програм дає секундний сплеск — справжній цикл триває 30+ хв.
+  - condition: template
+    value_template: "{{ (now() - as_datetime(started)).total_seconds() > 900 }}"
+  - action: rest_command.velesha_webhook
+    data:
+      name: washer-done
+      message: "Пральна машина завершила прання."
