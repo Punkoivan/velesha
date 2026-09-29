@@ -9,9 +9,9 @@ model, etc.) — enough for MLflow. Phoenix needs OpenInference attributes
 instead, so GoogleADKInstrumentor adds those on top (see setup()). setup() should run once, as early in the
 process as practical (module import time in main.py).
 
-Attribute size: the collector's backend caps attribute values at 4KB, so
-OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT is set here rather than left to truncate
-downstream — the SDK enforces it on every span/log attribute itself.
+Attribute size: OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT is set to 32KB — 4KB cut
+the long system prompt in llm.input_messages.*. The SDK enforces it on every
+span/log attribute itself; setdefault, so the env var still overrides it.
 """
 
 import logging
@@ -29,7 +29,7 @@ from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-os.environ.setdefault("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "4096")  # backend caps attributes at 4KB
+os.environ.setdefault("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "32768")  # 4KB cut the system prompt (ADR-0059)
 
 _configured = False
 
