@@ -640,8 +640,12 @@ def _qbit_add_schema() -> dict:
 _ADD_VERB_RE = re.compile(
     r"(додай|додати|завантаж|скач|качай|постав|давай|бери|візьми|обер|вибер|варіант|номер|№|\b[1-8]\b|"
     r"перш|друг|трет|четвер|п'ят)", re.IGNORECASE)
-_GROCY_CONSUME_RE = re.compile(r"(використав|використала|витратив|витратила|списав|списала|з'їв|з'їла|випив|випила|закінчив|закінчил)", re.IGNORECASE)
-_GROCY_ADD_RE = re.compile(r"(купив|купила|докупив|докупила|поклав|поклала|поповни|прибав|дода)", re.IGNORECASE)
+# Verb stems ending in [вл] cover він/вона/вони ("з'їв", "з'їла", "з'їли") —
+# the first version listed only singular forms, so "ми їх з'їли" never got
+# grocy_consume offered. ['’ʼ]? — speech-to-text emits any apostrophe or none.
+_GROCY_CONSUME_RE = re.compile(
+    r"(використа[вл]|витрати[вл]|списа[вл]|спиши|з['’ʼ]?ї[вл]|випи[вл]|закінчи[вл]|нульов|обнул)", re.IGNORECASE)
+_GROCY_ADD_RE = re.compile(r"(купи[вл]|покла[вл]|поповни|прибав|дода)", re.IGNORECASE)
 # Broader than _GROCY_ADD_RE on purpose: creating a brand-new product is a
 # different (and less predictable) natural phrasing than restocking an
 # existing one ("додай товар", "заведи в перелік", "додай в grocy") —
@@ -652,7 +656,7 @@ _GROCY_NEW_PRODUCT_RE = re.compile(
     r"(товар|перелік|(grocy|гроч|грок)).*(дода|занес|завед|створ)", re.IGNORECASE)
 _GROCY_SHOP_RE = re.compile(r"(список покупок|списку покупок|треба купити|потрібно купити|купити)", re.IGNORECASE)
 
-_GROCY_COOK_RE = re.compile(r"(приготував|приготувала|зварив|зварила|спік|спекла|засмажив|засмажила)", re.IGNORECASE)
+_GROCY_COOK_RE = re.compile(r"(приготува[вл]|звари[вл]|спік|спекл|засмажи[вл])", re.IGNORECASE)
 _GROCY_RSHOP_RE = re.compile(r"(список покупок|списку покупок|додай.*не вистача|не вистача.*додай)", re.IGNORECASE)
 _GROCY_IMPORT_RE = re.compile(
     r"(дода|перенес|занес|імпорт|закин|запиш|запам'?ята|занот|збере).*рецепт|"
