@@ -16,6 +16,7 @@ span/log attribute itself; setdefault, so the env var still overrides it.
 
 import logging
 import os
+import re
 
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 from opentelemetry import trace
@@ -32,6 +33,14 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 os.environ.setdefault("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "32768")  # 4KB cut the system prompt (ADR-0059)
 
 _configured = False
+_BOT_TOKEN_RE = re.compile(r"/bot[^/]+/")
+
+
+def _redact_url(span, request) -> None:
+    for key in ("http.url", "url.full"):
+        url = span.attributes.get(key) if span.attributes else None
+        if url and "/bot" in url:
+            span.set_attribute(key, _BOT_TOKEN_RE.sub("/botREDACTED/", url))
 
 
 def enabled() -> bool:
@@ -56,7 +65,10 @@ def setup(service_name: str = "velesha-api") -> None:
     # ships as an OTLP log record — our own print(..., flush=True) lines don't,
     # left as-is since journalctl already covers them locally
 
-    RequestsInstrumentor().instrument()  # ha_client/grocy_client/jellyfin_client all ride on requests
+    # ha_client/grocy_client/jellyfin_client/telegram_client all ride on requests.
+    # Telegram puts the bot token in the URL path (/bot<token>/sendMessage) and
+    # the instrumentor records the full URL — scrub it before export (ADR-0061).
+    RequestsInstrumentor().instrument(request_hook=_redact_url)
     # Phoenix only understands OpenInference attributes (openinference.span.kind,
     # input.value, llm.input_messages, ...), not the gen_ai.* ones MLflow reads.
     # This swaps ADK's own tracer for one that emits OpenInference spans while

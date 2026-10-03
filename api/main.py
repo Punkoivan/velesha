@@ -22,6 +22,7 @@ import datetime
 import json
 import os
 import re
+import secrets
 import time
 import uuid
 
@@ -205,14 +206,17 @@ def list_models():
 
 
 @app.post("/webhook/{name}")
-async def webhook(name: str, request: Request, token: str = ""):
+async def webhook(name: str, request: Request, x_webhook_token: str = Header("")):
     """Inbound events FROM HA (an automation's rest_command), not the other
     direction — e.g. "vacuum finished" doesn't fit the reminder-calendar
     poller (ADR-0049/0056), since it's a state transition HA already knows
     about the moment it happens. `name` is just a label for the log line;
     routing is by `name` if this ever needs to do more than one thing.
+
+    Token in the X-Webhook-Token header, not ?token= — the query string
+    lands in uvicorn's access log and, via OTel, in the collector (ADR-0061).
     """
-    if not WEBHOOK_TOKEN or token != WEBHOOK_TOKEN:
+    if not WEBHOOK_TOKEN or not secrets.compare_digest(x_webhook_token, WEBHOOK_TOKEN):
         return JSONResponse({"error": "invalid token"}, status_code=403)
     try:
         body = await request.json()
