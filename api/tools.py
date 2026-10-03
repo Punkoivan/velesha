@@ -1312,12 +1312,29 @@ def _grocy_one(product: str):
     return found[0], None
 
 
-def _grocy_change(kind: str, args: dict) -> str:
+def _said_ambiguity(p: dict, user_text: str) -> str | None:
+    """Refusal when the user's own words fit several products and the model picked one.
+    The model can read grocy_stock and pass an exact name ("туалетний папір zewa")
+    for a bare "туалетного паперу" — the user never chose the brand (ADR-0068)."""
+    said = re.findall(r"[\w'’]+", (user_text or "").lower())
+    if not said:
+        return None
+    name_words = re.findall(r"[\w'’]+", p["name"].lower())
+    named = [w for w in name_words if w not in _MATCH_STOP and any(_word_score(u, w) > 0.75 for u in said)]
+    if not named:
+        return None  # user called it something else (or a follow-up turn) — nothing to check against
+    _, err = _grocy_one(" ".join(named))
+    return err
+
+
+def _grocy_change(kind: str, args: dict, user_text: str = "") -> str:
     amount = args.get("amount")
     if not isinstance(amount, (int, float)) or amount <= 0:
         return "НЕ ЗМІНЕНО. Кількість має бути додатним числом."
     p, err = _grocy_one(args.get("product", ""))
     if err:
+        return err
+    if err := _said_ambiguity(p, user_text):
         return err
     unit = _grocy_units().get(p["qu_id_stock"], "")
     have = grocy_client.product_stock(p["id"])
@@ -1334,8 +1351,8 @@ def _grocy_change(kind: str, args: dict) -> str:
     return f"Додано до списку покупок: {_fmt_amount(amount)} {unit} «{p['name']}»."
 
 
-def tool_grocy_consume(args: dict) -> str:
-    return _grocy_change("consume", args)
+def tool_grocy_consume(args: dict, user_text: str = "") -> str:
+    return _grocy_change("consume", args, user_text)
 
 
 _GROCY_SET_SCHEMA = {
@@ -1361,12 +1378,14 @@ _GROCY_SET_SCHEMA = {
 _UNIT_ALIASES = {"кілограм": "кг", "кіло": "кг", "грам": "г", "гр": "г", "літр": "л", "мілілітр": "мл"}
 
 
-def tool_grocy_set_stock(args: dict) -> str:
+def tool_grocy_set_stock(args: dict, user_text: str = "") -> str:
     amount = args.get("amount")
     if not isinstance(amount, (int, float)) or amount < 0:
         return "НЕ ЗМІНЕНО. Залишок має бути числом від 0."
     p, err = _grocy_one(args.get("product", ""))
     if err:
+        return err
+    if err := _said_ambiguity(p, user_text):
         return err
     stock_unit = _grocy_units().get(p["qu_id_stock"], "")
     unit = (args.get("unit") or "").strip().lower()
@@ -1383,12 +1402,12 @@ def tool_grocy_set_stock(args: dict) -> str:
     return f"Залишок «{p['name']}»: було {_fmt_amount(have)} {stock_unit}, тепер {_fmt_amount(qty)} {stock_unit}."
 
 
-def tool_grocy_add_stock(args: dict) -> str:
-    return _grocy_change("add", args)
+def tool_grocy_add_stock(args: dict, user_text: str = "") -> str:
+    return _grocy_change("add", args, user_text)
 
 
-def tool_grocy_shopping_add(args: dict) -> str:
-    return _grocy_change("shop", args)
+def tool_grocy_shopping_add(args: dict, user_text: str = "") -> str:
+    return _grocy_change("shop", args, user_text)
 
 
 def _grocy_product_add_schema() -> dict:
@@ -2647,7 +2666,8 @@ def call_tool(name: str, arguments_json: str, user_text: str = "") -> str:
     if name in ADMIN_TOOLS and not users.is_admin():
         return "НЕ ЗМІНЕНО. Ця дія доступна лише адміністратору."
     try:
-        if name in ("qbittorrent_add", "toloka_add", "recipe_add", "ha_switch", "cancel_reminder"):
+        if name in ("qbittorrent_add", "toloka_add", "recipe_add", "ha_switch", "cancel_reminder",
+                    "grocy_consume", "grocy_add_stock", "grocy_set_stock", "grocy_shopping_add"):
             return handler(args, user_text)
         return handler(args)
     except Exception as e:
