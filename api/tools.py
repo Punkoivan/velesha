@@ -51,7 +51,7 @@ TOOLS = [
         "function": {
             "name": "search_knowledge",
             "description": (
-                "Семантичний пошук у базі знань Velesha: рецепти (Tandoor), "
+                "Семантичний пошук у базі знань Velesha: рецепти з Grocy (за змістом: інгредієнти, страва, техніка), "
                 "знімок історії Home Assistant (може бути застарілим — для 'коли востаннє' краще get_sensor_history), Jellyfin "
                 "(перегляди фільмів/серіалів), особисті оцінки й відгуки на переглянуті фільми "
                 "(watched_movies — для 'порадь щось схоже на X', врахування смаку). НЕ дає живий поточний стан "
@@ -63,7 +63,7 @@ TOOLS = [
                     "query": {"type": "string", "description": "Пошуковий запит"},
                     "source": {
                         "type": "string",
-                        "enum": ["ha_history", "jellyfin_library", "tandoor_recipes", "watched_movies", "all"],
+                        "enum": ["ha_history", "jellyfin_library", "grocy_recipes", "watched_movies", "all"],
                         "description": "Обмежити пошук однією колекцією, або 'all' (за замовчуванням)",
                     },
                 },
@@ -581,14 +581,14 @@ def tool_get_sensor_history(args: dict) -> str:
 # model decision.
 CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
                  "grocy_consume", "grocy_add_stock", "grocy_shopping_add", "grocy_product_add",
-                 "grocy_recipe_consume", "grocy_recipe_shopping", "grocy_recipe_import", "recipe_add",
+                 "grocy_recipe_consume", "grocy_recipe_shopping", "recipe_add",
                  "note_add", "ha_switch", "vacuum_control", "vacuum_schedule",
                  "log_watched_movie", "remind_me", "cancel_reminder"}
 
 # Answered verbatim, without a second model call (ADR-0024).
 # Administration stays with the admin (ADR-0035); everything else is shared.
 ADMIN_TOOLS = {"qbittorrent_status", "qbittorrent_list", "qbittorrent_add", "toloka_search", "toloka_add"}
-PASSTHROUGH_TOOLS = {"toloka_search", "grocy_recipe_import", "recipe_add", "recipe_cook"}
+PASSTHROUGH_TOOLS = {"toloka_search", "recipe_add", "recipe_cook"}
 _POWER_RE = re.compile(r"(вимкн|вимик|виключ|погас|увімкн|ввімкн|вмикн|вмик|включ|вруб|запал)", re.IGNORECASE)
 _TIMER_RE = re.compile(r"(таймер|заплан|скасу|відміни|відмін)", re.IGNORECASE)
 _VACUUM_RE = re.compile(r"(робот|пилосос|роборок|roborock|прибир)", re.IGNORECASE)
@@ -673,7 +673,7 @@ def _rs() -> dict:
 
 
 # HA drops a conversation after a few idle minutes and the next short reply
-# ("Ранч") then arrives with no history; remember that a Tandoor→Grocy import
+# ("Ранч") then arrives with no history; remember that a recipe draft
 # is in progress so that reply is routed to it, not to a film search (ADR-0033).
 _IMPORT_CTX_TTL = 60 * 60
 
@@ -786,20 +786,6 @@ def _grocy_recipe_schema(name: str, desc: str) -> dict:
     }
 
 
-_GROCY_MISSING_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "grocy_recipes_not_imported",
-        "description": (
-            "Які рецепти з Tandoor ще НЕ додані до Grocy (точний перелік, рахується кодом; "
-            "не використовуй для цього search_knowledge)."
-        ),
-        "parameters": {"type": "object", "properties": {}},
-    },
-}
-
-
-
 _HA_SWITCH_SCHEMA = {
     "type": "function",
     "function": {
@@ -819,26 +805,6 @@ _HA_SWITCH_SCHEMA = {
                 "minutes": {"type": "integer", "description": "Для in_minutes: через скільки хвилин"},
             },
             "required": ["device"],
-        },
-    },
-}
-
-
-_GROCY_IMPORT_SCHEMA = {
-    "type": "function",
-    "function": {
-        "name": "grocy_recipe_import",
-        "description": (
-            "Перенести рецепт з Tandoor у Grocy (зі структурованими інгредієнтами). Спершу без confirm — "
-            "повертає чернетку на підтвердження. Виклик з confirm=true лише коли користувач підтвердив чернетку."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "recipe": {"type": "string", "description": "Рівно те, що сказав користувач (напр. «соус», «Ранч»). НЕ вибирай рецепт сам: якщо назва неоднозначна, передай як є, інструмент перепитає."},
-                "confirm": {"type": "boolean", "description": "true — записати підтверджену чернетку"},
-            },
-            "required": ["recipe"],
         },
     },
 }
@@ -872,13 +838,13 @@ def tools_for(user_text: str) -> list[dict]:
     # Read-only and cheap, so always offered: a word gate looked only at the
     # latest message and lost the request in multi-turn talk (ADR-0029).
     tools = tools + [_toloka_search_schema(), _get_reminders_schema(), _notes_search_schema(), _recipe_cook_schema()]
-    # grocy_recipe_import/recipe_add write, but only behind their own
+    # recipe_add writes, but only behind its own
     # draft+confirm+title-match gate (never on the first call) — so, same
     # reasoning as ADR-0029, always offered rather than word-gated. A regex
     # gate here kept missing real phrasing ("запишемо" vs "запиши", a
     # "рецепт" mentioned turns ago, a 5-word confirmation) and the model
     # fell back to note_add, the only tool it still had.
-    tools = tools + [_GROCY_IMPORT_SCHEMA, _GROCY_MISSING_SCHEMA, _recipe_add_schema()]
+    tools = tools + [_recipe_add_schema()]
     # get_watched_movies is already unconditionally in TOOLS (not a CONTROL_TOOL) — do not re-add it.
     if show_all or _LOG_MOVIE_RE.search(text):
         tools = tools + [_log_watched_movie_schema()]
@@ -1350,20 +1316,6 @@ def tool_grocy_product_add(args: dict) -> str:
     return f"Створено товар «{name}» у Grocy, початковий запас: {_fmt_amount(amount)} {unit_name}."
 
 
-def _tandoor_titles() -> list[str]:
-    pts, _ = qdrant_client().scroll("tandoor_recipes", limit=500, with_payload=True)
-    return sorted(p.payload["title"] for p in pts)
-
-
-def tool_grocy_recipes_not_imported(args: dict) -> str:
-    have = {r["name"].lower() for r in grocy_client.objects("recipes")}
-    todo = [t for t in _tandoor_titles() if t.lower() not in have]
-    _rs()["ctx_at"] = time.time()
-    if not todo:
-        return "Усі рецепти з Tandoor уже є в Grocy."
-    return f"Ще не в Grocy ({len(todo)} із {len(todo) + len(have)}): " + "; ".join(todo) + "."
-
-
 def _grocy_recipe_match(query: str) -> list[dict]:
     q = query.lower().strip()
     recipes = grocy_client.objects("recipes")
@@ -1379,7 +1331,7 @@ def tool_grocy_recipes(args: dict) -> str:
     recipes = [r for r in _grocy_recipe_match(query) if r.get("type") == "normal"]
     if not recipes:
         return ("У Grocy немає рецептів" + (f" за «{query}»" if query else "")
-                + ". Для поради чи пошуку рецептів використай search_knowledge (Tandoor).")
+                + ". Для поради чи пошуку рецептів за змістом використай search_knowledge.")
     lines = []
     for r in recipes[:15]:
         f = grocy_client.recipe_fulfillment(r["id"])
@@ -1432,19 +1384,6 @@ def _convert(amount: float, from_unit: str, to_unit: str) -> float | None:
     if a in _UNIT_TO_BASE and b in _UNIT_TO_BASE and _UNIT_TO_BASE[a][0] == _UNIT_TO_BASE[b][0]:
         return amount * _UNIT_TO_BASE[a][1] / _UNIT_TO_BASE[b][1]
     return None  # шт vs г and other mismatches: never guess a conversion
-
-
-def _tandoor_recipe(name: str) -> tuple[dict | None, str | None]:
-    pts, _ = qdrant_client().scroll("tandoor_recipes", limit=200, with_payload=True)
-    recs = [p.payload for p in pts]
-    q = name.lower().strip()
-    exact = [r for r in recs if r["title"].lower() == q]
-    found = exact or [r for r in recs if all(any(w.startswith(qt) for w in r["title"].lower().split()) for qt in q.split())]
-    if not found:
-        return None, f"У Tandoor немає рецепта «{name}»."
-    if len(found) > 1 and not exact:
-        return None, "Уточни, який саме рецепт: " + "; ".join(r["title"] for r in found[:6]) + "."
-    return found[0], None
 
 
 def _extract_ingredients(text: str) -> tuple[int, list[dict]]:
@@ -1517,32 +1456,6 @@ def _grocy_title_match(query: str, title: str) -> bool:
     return all(any(w.startswith(qt) for w in tl) for qt in q)
 
 
-def tool_grocy_recipe_import(args: dict, user_text: str = "") -> str:
-    name = (args.get("recipe") or "").strip()
-    d = _rs()["draft"]
-    # A write needs a fresh draft for this very recipe AND a real "так" from
-    # the user; anything else (a new dish name sent with confirm=true) is just
-    # a request for a draft, never a refusal or a silent write.
-    if (args.get("confirm") and _fresh_recipe_draft() and d and _CONFIRM_RE.search(user_text)
-            and (not name or _grocy_title_match(name, d["title"]))):
-        return _write_draft(d)
-    _rs()["ctx_at"] = time.time()
-    rec, err = _tandoor_recipe(name)
-    if err:
-        return "НЕ ЗМІНЕНО. " + err
-    if any(r["name"].lower() == rec["title"].lower() for r in grocy_client.objects("recipes")):
-        return f"НЕ ЗМІНЕНО. Рецепт «{rec['title']}» уже є в Grocy."
-    d = _build_draft(rec["title"], rec["text"])
-    if not any(l["amount"] for l in d["lines"]):
-        return f"НЕ ЗМІНЕНО. У тексті «{rec['title']}» немає інгредієнтів з кількостями — переносити нічого."
-    # Tandoor's own step-by-step text (already has "Крок N: ..." markers from
-    # textify) — kept as the Grocy recipe's description so recipe_cook can
-    # walk through it later, instead of being discarded after the draft.
-    d["description"] = rec["text"]
-    _rs().update(draft=d, at=time.time())
-    return _draft_text(d)
-
-
 def _write_draft(d: dict) -> str:
     units = {u["name"].lower(): u["id"] for u in grocy_client.objects("quantity_units")}
     loc = next((l["id"] for l in grocy_client.objects("locations") if l["name"] == "Кухня"), 1)
@@ -1574,8 +1487,7 @@ def _recipe_add_schema() -> dict:
         "name": "recipe_add",
         "description": (
             "Створити НОВИЙ рецепт напряму в Grocy — власний, продиктований користувачем, або знайдений в "
-            "інтернеті (web_search). Використовуй, коли рецепта ще нема ні в Grocy, ні в Tandoor (для тих, що "
-            "вже є в Tandoor, є grocy_recipe_import). Спершу без confirm — повертає чернетку на підтвердження. "
+            "інтернеті (web_search). Використовуй, коли рецепта ще нема в Grocy. Спершу без confirm — повертає чернетку на підтвердження. "
             "confirm=true лише коли користувач явно підтвердив чернетку."
         ),
         "parameters": {
@@ -1596,7 +1508,7 @@ def tool_recipe_add(args: dict, user_text: str = "") -> str:
     title = (args.get("title") or "").strip()
     if not title:
         return "НЕ ЗМІНЕНО. Яка назва рецепта?"
-    _rs()["ctx_at"] = time.time()  # same 60-min "recipe conversation" window as grocy_recipe_import (ADR-0033)
+    _rs()["ctx_at"] = time.time()  # 60-min "recipe conversation" window (ADR-0033)
     d = _rs()["draft"]
     if (args.get("confirm") and _fresh_recipe_draft() and d and _CONFIRM_RE.search(user_text)
             and _grocy_title_match(title, d["title"])):
@@ -1621,8 +1533,8 @@ def tool_recipe_add(args: dict, user_text: str = "") -> str:
 
 
 # Splits a Grocy recipe's description back into steps. Covers both
-# conventions this file writes: "1. text" (recipe_add) and Tandoor's own
-# "Крок N: ..." (grocy_recipe_import, via textify).
+# conventions in Grocy: "1. text" (recipe_add) and "Крок N: ..." (recipes
+# imported from the now-retired Tandoor, ADR-0063).
 _STEP_SPLIT_RE = re.compile(r"(?:\n|^)\s*(?:\d+\.|Крок\s*\d+:)\s*")
 _COOK_TTL = 60 * 60  # a real cooking session can run long — same window as _fresh_import_ctx
 _cook_state: dict[str, dict] = {}
@@ -2493,9 +2405,7 @@ DISPATCH = {
     "grocy_stock": tool_grocy_stock,
     "grocy_shopping_list": tool_grocy_shopping_list,
     "grocy_recipes": tool_grocy_recipes,
-    "grocy_recipe_import": tool_grocy_recipe_import,
     "recipe_add": tool_recipe_add,
-    "grocy_recipes_not_imported": tool_grocy_recipes_not_imported,
     "grocy_recipe_consume": tool_grocy_recipe_consume,
     "grocy_recipe_shopping": tool_grocy_recipe_shopping,
     "grocy_consume": tool_grocy_consume,
@@ -2519,7 +2429,7 @@ def call_tool(name: str, arguments_json: str, user_text: str = "") -> str:
     if name in ADMIN_TOOLS and not users.is_admin():
         return "НЕ ЗМІНЕНО. Ця дія доступна лише адміністратору."
     try:
-        if name in ("qbittorrent_add", "toloka_add", "grocy_recipe_import", "recipe_add", "ha_switch", "cancel_reminder"):
+        if name in ("qbittorrent_add", "toloka_add", "recipe_add", "ha_switch", "cancel_reminder"):
             return handler(args, user_text)
         return handler(args)
     except Exception as e:

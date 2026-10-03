@@ -38,6 +38,7 @@ import users
 
 telemetry.setup()  # as early as possible — before tools/adk_agent touch google.adk's own tracer
 import pet_feed
+import recipe_index
 from tools import CONTROL_TOOLS, PASSTHROUGH_TOOLS, call_tool, tools_for, reminder_poll_loop
 
 WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN")  # guards inbound webhooks from HA (ADR-0057)
@@ -83,16 +84,14 @@ _CONTROL_LINES = {
     "grocy_consume": "- grocy_consume: списати використане зі запасів (кількість в одиницях продукту у Grocy)\n",
     "grocy_recipe_consume": "- grocy_recipe_consume: рецепт з Grocy приготовано — списати інгредієнти\n",
     "grocy_recipe_shopping": "- grocy_recipe_shopping: додати до списку покупок нестачу для рецепта з Grocy\n",
-    "grocy_recipe_import": "- grocy_recipe_import: перенести рецепт з Tandoor у Grocy (чернетка → підтвердження користувача → confirm=true)\n",
     "recipe_add": (
         "- recipe_add: НОВИЙ рецепт з нуля напряму в Grocy — власний або знайдений в інтернеті (web_search), "
-        "коли його нема ні в Grocy, ні в Tandoor (чернетка → підтвердження користувача → confirm=true)\n"
+        "коли його нема в Grocy (чернетка → підтвердження користувача → confirm=true)\n"
     ),
     "recipe_cook": (
         "- recipe_cook: покроково провести голосом по рецепту з Grocy — action=start (з name) починає, "
         "next/repeat/restart керують кроками; передавай текст кроку користувачу дослівно\n"
     ),
-    "grocy_recipes_not_imported": "- grocy_recipes_not_imported: точний перелік рецептів Tandoor, яких ще немає в Grocy\n",
     "remind_me": (
         "- remind_me: разове нагадування, надішле пуш о вказаному часі (time \'19\' чи \'19:30\', або "
         "in_minutes); get_reminders — список запланованих; cancel_reminder — скасувати за частиною тексту "
@@ -136,7 +135,7 @@ def system_prompt(offered: set[str]) -> str:
         "Корм списується з Grocy автоматично щодня — не списуй його вручну за годування; "
         "«купили корм» — це поповнення запасу.\n\n"
         "У тебе є інструменти:\n"
-        "- search_knowledge: рецепти (Tandoor) і Jellyfin (що дивився, поради); знімок історії HA може бути застарілим\n"
+        "- search_knowledge: рецепти з Grocy за змістом і Jellyfin (що дивився, поради); знімок історії HA може бути застарілим\n"
         "- grocy_stock / grocy_shopping_list: домашні запаси (їжа, господарські товари) і список покупок у Grocy\n"
         "- grocy_recipes: рецепти, заведені в Grocy, і чи вистачає для них запасів (пошук рецептів за змістом — search_knowledge)\n"
         "- jellyfin_search: чи Є фільм/серіал у бібліотеці Jellyfin за назвою (точний пошук); "
@@ -177,6 +176,7 @@ telemetry.instrument_fastapi(app)
 async def _start_reminder_poller():
     asyncio.create_task(reminder_poll_loop())
     asyncio.create_task(pet_feed.loop())  # daily dog-food consumption from Grocy (ADR-0062)
+    asyncio.create_task(recipe_index.loop())  # Grocy recipes -> Qdrant for search_knowledge (ADR-0063)
 
 
 @app.on_event("shutdown")
