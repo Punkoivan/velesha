@@ -28,6 +28,7 @@ from google.genai import types
 from mcp import StdioServerParameters
 
 import guardrails
+import memory
 import jellyfin_client
 import tools as legacy
 import users
@@ -38,7 +39,7 @@ SESSION_TTL = 60 * 60  # HA forgets a conversation after minutes; we keep a pers
 KEEP_USER_TURNS = 3
 # Read-only tools whose entire job is reporting things that already happened —
 # calling them is itself grounding for "claim" wording in the answer (ADR-0047).
-_CLAIM_GROUNDING_TOOLS = {"get_reminders", "notes_search"}
+_CLAIM_GROUNDING_TOOLS = {"get_reminders", "memory_search"}
 
 _req: contextvars.ContextVar[dict] = contextvars.ContextVar("velesha_req")
 
@@ -198,7 +199,7 @@ class Engine:
         names = {t["function"]["name"] for t in legacy.tools_for(text)}
         if self.jellyfin and not legacy.in_recipe_import(text):
             names |= jellyfin_names_for(text)
-        return self._system_prompt(names)
+        return self._system_prompt(names) + memory.context_block()  # relevant long-term facts (ADR-0069)
 
     def _before_model(self, hosted: bool):
         def cb(callback_context, llm_request):
@@ -308,7 +309,7 @@ class Engine:
                 return "Забагато кроків міркування — не вдалось отримати остаточну відповідь.", state["acted"], hosted
             return "Не вдалося сформувати відповідь — спробуй ще раз.", state["acted"], hosted
         self.last_calls = state["calls"]
-        # get_reminders/notes_search only ever report things that already
+        # get_reminders/memory_search only ever report things that already
         # happened — their answers legitimately use "заплановано"/"записано"
         # wording without a control tool running this turn. Treating that as
         # an unfounded claim scared the user into thinking a real reminder

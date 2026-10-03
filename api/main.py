@@ -21,6 +21,7 @@ import asyncio
 import datetime
 import json
 import os
+import pathlib
 import re
 import secrets
 import time
@@ -38,6 +39,7 @@ import users
 
 telemetry.setup()  # as early as possible — before tools/adk_agent touch google.adk's own tracer
 import chore_notify
+import memory
 import pet_feed
 import recipe_index
 from tools import CONTROL_TOOLS, PASSTHROUGH_TOOLS, call_tool, tools_for, reminder_poll_loop
@@ -102,7 +104,8 @@ _CONTROL_LINES = {
     "ha_switch": "- ha_switch: увімкнути/вимкнути пристрій (розетку, лампу тощо) — спробуй викликати навіть якщо не певен, чи він у дозволеному списку, інструмент сам скаже, якщо ні; «вимкни, коли закінчиться фільм» = when=after_playback, «через N хвилин» = when=in_minutes, «що заплановано» = status, «скасуй» = cancel (ставить таймер HA)\n",
     "vacuum_control": "- vacuum_control: керування роботом-пилососом ЗАРАЗ — start/stop/pause/dock/locate, за потреби room (кімната) і mode (vacuum=без води/mop/vac_and_mop); стан/заряд — get_live_state\n",
     "vacuum_schedule": "- vacuum_schedule: запланувати запуск пилососа на пізніше (time/date або in_minutes), за потреби room і mode — той самий календар, що й нагадування\n",
-    "note_add": "- note_add: записати особисту нотатку користувача; notes_search — знайти його нотатки (чужих не бачиш)\n",
+    "memory_add": "- memory_add: запам'ятати факт надовго (лише за явним проханням); memory_search — що ти пам'ятаєш\n",
+    "memory_forget": "- memory_forget: забути факт, коли користувач просить «забудь…»\n",
     "grocy_add_stock": "- grocy_add_stock: додати куплене до запасів\n",
     "grocy_product_add": "- grocy_product_add: завести НОВИЙ товар у Grocy з початковим запасом — коли grocy_add_stock каже, що товару ще нема\n",
     "grocy_shopping_add": "- grocy_shopping_add: додати продукт до списку покупок\n",
@@ -118,6 +121,24 @@ _CONTROL_LINES = {
         "слів користувача, інакше запитай яку\n"
     ),
 }
+
+
+# HA renders the agent's "Instructions" as a template; a line
+# "Velesha-User: {{ user_name }}" there tells us which HA user (= device here:
+# one HA login per phone/tablet) is talking. Devices not in
+# VELESHA_DEVICE_USERS are household-shared (ADR-0069).
+_DEVICE_MARK_RE = re.compile(r"Velesha-User:\s*([^\s,;]+)")
+
+
+def _identify(caller: str, req) -> str:
+    if caller != "default":
+        return caller  # API-key users (ADR-0035) win
+    system = " ".join(m.content or "" for m in req.messages if m.role == "system")
+    found = _DEVICE_MARK_RE.search(system)
+    if not found:
+        return os.environ.get("VELESHA_DEFAULT_USER", "punka")  # no marker: single-user behaviour as before
+    devices = dict(p.split(":", 1) for p in os.environ.get("VELESHA_DEVICE_USERS", "").split(",") if ":" in p)
+    return devices.get(found.group(1).strip().lower(), memory.SHARED)
 
 
 def system_prompt(offered: set[str]) -> str:
@@ -176,6 +197,9 @@ telemetry.instrument_fastapi(app)
 
 @app.on_event("startup")
 async def _start_reminder_poller():
+    moved = memory.migrate_notes(pathlib.Path(__file__).parent / "data" / "notes")  # ADR-0069, once
+    if moved:
+        print(f"memory: migrated {moved} notes", flush=True)
     asyncio.create_task(reminder_poll_loop())
     asyncio.create_task(pet_feed.loop())  # daily dog-food consumption from Grocy (ADR-0062)
     asyncio.create_task(recipe_index.loop())  # Grocy recipes -> Qdrant for search_knowledge (ADR-0063)
@@ -238,6 +262,14 @@ async def webhook(name: str, request: Request, x_webhook_token: str = Header("")
         except Exception as e:
             print(f"webhook telegram error ({name}): {e}", flush=True)
     return {"ok": True}
+
+
+async def _learn(text: str, answer: str, user: str) -> None:
+    """After the answer is out: durable facts from this turn into memory (ADR-0069)."""
+    try:
+        await asyncio.to_thread(memory.learn, text, answer, user)
+    except Exception as e:  # never matters to the user's request
+        print(f"memory learn error: {e}", flush=True)
 
 
 def _complete_local(messages: list[dict], tools: list[dict]) -> dict:
@@ -414,6 +446,7 @@ async def chat_completions(req: ChatCompletionRequest, authorization: str | None
     caller = users.resolve(authorization)
     if caller is None:
         return JSONResponse({"error": {"message": "Unknown API key", "type": "invalid_request_error"}}, status_code=401)
+    caller = _identify(caller, req)
     users.set_current(caller)
     if os.environ.get("LOG_CALLER_PROMPT"):  # diagnostic: does HA mark voice vs typed input?
         with open("/tmp/velesha-caller.log", "a") as f:
@@ -425,9 +458,11 @@ async def chat_completions(req: ChatCompletionRequest, authorization: str | None
             }, ensure_ascii=False) + "\n")
     last_user = next((m.content or "" for m in reversed(req.messages) if m.role == "user"), "")
 
+    memory.set_block(await asyncio.to_thread(memory.relevant_block, last_user, caller))
     if os.environ.get("AGENT_ENGINE", "adk") == "adk":
         answer, acted, _ = await _adk_engine().run(caller, last_user)
         answer = unfounded_claim(answer, acted)
+        asyncio.create_task(_learn(last_user, answer, caller))
     else:
         messages = [{"role": "system", "content": ""}]
         messages += [{"role": m.role, "content": m.content or ""} for m in req.messages if m.role != "system"]

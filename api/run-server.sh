@@ -12,6 +12,9 @@ export LOG_CALLER_PROMPT=1
 export REMINDER_NOTIFY_DEFAULT=notify.mobile_app_punkas26  # server-side reminder push, not the HA calendar automation (ADR-0049)
 export JELLYFIN_PLAY_ALLOW=kodi,firefox  # playback targets allowed besides Kodi — laptop's Jellyfin Web session (ADR-0052)
 export TELEGRAM_CHAT_ID_DEFAULT=333751480  # Telegram notification channel alongside HA notify (ADR-0054)
+export VELESHA_DEFAULT_USER=punka  # requests without a device marker (ADR-0069)
+export VELESHA_NAMES="punka:Іван"  # how memory names a person in auto-learned facts
+export VELESHA_DEVICE_USERS="punka-mobile:punka,punka-ha:punka,mac:punka"  # HA user -> person; other devices are shared
 export PET_FEED_PRODUCT_ID=169  # Grocy: dog food, consumed automatically per feeding (ADR-0062)
 export PET_FEED_SCHEDULE="08:00=75,20:00=75"  # feeding time=grams
 export PET_FEED_WARN_DAYS=7

@@ -23,6 +23,7 @@ import zoneinfo
 import requests
 
 import guardrails
+import memory
 import grocy_client
 import movies_db
 import ha_client
@@ -583,7 +584,7 @@ def tool_get_sensor_history(args: dict) -> str:
 CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
                  "grocy_consume", "grocy_add_stock", "grocy_set_stock", "grocy_shopping_add", "grocy_product_add",
                  "grocy_recipe_consume", "grocy_recipe_shopping", "recipe_add",
-                 "note_add", "ha_switch", "vacuum_control", "vacuum_schedule",
+                 "memory_add", "memory_forget", "ha_switch", "vacuum_control", "vacuum_schedule",
                  "log_watched_movie", "remind_me", "cancel_reminder"}
 
 # Answered verbatim, without a second model call (ADR-0024).
@@ -841,7 +842,7 @@ def tools_for(user_text: str) -> list[dict]:
         tools = tools + [_qbit_add_schema()]
     # Read-only and cheap, so always offered: a word gate looked only at the
     # latest message and lost the request in multi-turn talk (ADR-0029).
-    tools = tools + [_toloka_search_schema(), _get_reminders_schema(), _notes_search_schema(), _recipe_cook_schema()]
+    tools = tools + [_toloka_search_schema(), _get_reminders_schema(), _memory_search_schema(), _recipe_cook_schema()]
     # recipe_add writes, but only behind its own
     # draft+confirm+title-match gate (never on the first call) — so, same
     # reasoning as ADR-0029, always offered rather than word-gated. A regex
@@ -892,7 +893,9 @@ def tools_for(user_text: str) -> list[dict]:
     if show_all or (_fresh_search() and (_ADD_VERB_RE.search(text) or _fresh_pending() or _names_a_category(text))):
         tools = tools + [_toloka_add_schema()]
     if show_all or _NOTE_ADD_RE.search(text):
-        tools = tools + [_note_add_schema()]
+        tools = tools + [_memory_add_schema()]
+    if show_all or _FORGET_RE.search(text):
+        tools = tools + [_memory_forget_schema()]
     if not users.is_admin():
         tools = [x for x in tools if x["function"]["name"] not in ADMIN_TOOLS]
     # Defence in depth: a tool baked into the base TOOLS list plus its own gated
@@ -1844,80 +1847,65 @@ def tool_recipe_cook(args: dict) -> str:
     return "НЕ ЗМІНЕНО. Не зрозумів дію — start, next, repeat чи restart?"
 
 
-_NOTES_DIR = pathlib.Path(__file__).parent / "data" / "notes"
+_NOTES_DIR = pathlib.Path(__file__).parent / "data" / "notes"  # pre-ADR-0069 notes, migrated into memory on startup
 _NOTE_ADD_RE = re.compile(r"(запиши|запам'ятай|запамятай|занотуй|додай нотатку|нова нотатка|збережи нотатку)", re.IGNORECASE)
-_NOTES_SIM_THRESHOLD = 0.5  # bge-m3 cosine, tuned loosely — see ADR-0046
+_FORGET_RE = re.compile(r"(забудь|видали з пам|прибери з пам|це неправда|вже не актуально)", re.IGNORECASE)
+_SHARED_SCOPE_RE = re.compile(r"(для всіх|для всієї|спільн|для дому|для родини|всім)", re.IGNORECASE)
 
 
-def _notes_file() -> pathlib.Path:
-    return _NOTES_DIR / f"{users.current()}.jsonl"  # the caller only ever sees their own file
-
-
-def _note_add_schema() -> dict:
+def _memory_add_schema() -> dict:
     return {"type": "function", "function": {
-        "name": "note_add",
-        "description": "Записати особисту нотатку користувача (бачить лише він). Лише за явним проханням записати/запам'ятати.",
-        "parameters": {"type": "object", "properties": {"text": {"type": "string", "description": "Текст нотатки, як сказав користувач"}}, "required": ["text"]}}}
+        "name": "memory_add",
+        "description": ("Запам'ятати факт надовго (довготривала пам'ять) — лише за явним проханням записати/запам'ятати. "
+                        "Пам'ять підтягується в майбутні розмови сама."),
+        "parameters": {"type": "object", "properties": {
+            "text": {"type": "string", "description": "Факт одним самодостатнім реченням, з іменами замість займенників"}},
+            "required": ["text"]}}}
 
 
-def _notes_search_schema() -> dict:
+def _memory_search_schema() -> dict:
     return {"type": "function", "function": {
-        "name": "notes_search",
-        "description": "Особисті нотатки користувача: пошук за словом/змістом (напр. «де батарейки») або останні, якщо без запиту. Інших людей нотатки недоступні.",
-        "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "Що шукати; порожньо — останні"}}}}}
+        "name": "memory_search",
+        "description": ("Довготривала пам'ять (особисте користувача + спільне для дому): пошук за змістом "
+                        "(«що ти пам'ятаєш про Еббі», «де батарейки») або останні записи, якщо без запиту."),
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Що шукати; порожньо — останні записи"}}}}}
 
 
-def _cosine(a: list[float], b: list[float]) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
-    na = sum(x * x for x in a) ** 0.5
-    nb = sum(y * y for y in b) ** 0.5
-    return dot / (na * nb) if na and nb else 0.0
+def _memory_forget_schema() -> dict:
+    return {"type": "function", "function": {
+        "name": "memory_forget",
+        "description": "Забути (видалити з пам'яті) один факт, коли користувач каже «забудь…» чи що це неправда.",
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "Який саме факт, своїми словами"}}, "required": ["query"]}}}
 
 
-def tool_note_add(args: dict) -> str:
+def tool_memory_add(args: dict, user_text: str = "") -> str:
     text = (args.get("text") or "").strip()
     if not text:
-        return "НЕ ЗМІНЕНО. Порожня нотатка."
-    _NOTES_DIR.mkdir(parents=True, exist_ok=True)
-    row = {"at": datetime.datetime.now(_TZ).strftime("%Y-%m-%d %H:%M"), "text": text}
-    try:
-        row["vec"] = [round(x, 5) for x in embed(text)]
-    except Exception:
-        pass  # embedding server down — note is still saved, just substring-searchable only until re-embedded
-    with _notes_file().open("a", encoding="utf-8") as f:
-        f.write(json.dumps(row, ensure_ascii=False) + "\n")
-    return f"Записано в особисті нотатки: «{text[:80]}»."
+        return "НЕ ЗМІНЕНО. Що саме запам'ятати?"
+    user = users.current()
+    # the user's own words decide personal vs household, not the model (ADR-0069)
+    owner = memory.SHARED if user == memory.SHARED or _SHARED_SCOPE_RE.search(user_text or "") else user
+    row, dup = memory.add(text, owner, "explicit")
+    if dup:
+        return f"Це вже є в пам'яті: «{dup['text'][:100]}»."
+    return f"Запам'ятала{' для всіх' if owner == memory.SHARED else ''}: «{text[:100]}»."
 
 
-def tool_notes_search(args: dict) -> str:
-    path = _notes_file()
-    if not path.exists():
-        return "Особистих нотаток ще немає."
-    rows = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
-    q = (args.get("query") or "").strip()
-    if not q:
-        picked = rows[-15:]
-    else:
-        ql = q.lower()
-        substr = [r for r in rows if any(w[:5] in r["text"].lower() for w in ql.split() if len(w) >= 3)]
-        semantic = []
-        try:
-            qvec = embed(q)
-            scored = sorted(
-                ((r, _cosine(qvec, r["vec"])) for r in rows if r.get("vec")),
-                key=lambda pair: pair[1], reverse=True)
-            semantic = [r for r, score in scored[:5] if score >= _NOTES_SIM_THRESHOLD]
-        except Exception:
-            pass  # embedding server down — substring hits still work
-        seen, picked = set(), []
-        for r in substr + semantic:
-            key = (r["at"], r["text"])
-            if key not in seen:
-                seen.add(key)
-                picked.append(r)
-    if not picked:
-        return "У ваших нотатках нічого не знайдено."
-    return "\n".join(f"{r['at']}: {r['text']}" for r in picked[:15])
+def tool_memory_search(args: dict) -> str:
+    rows = memory.search(args.get("query") or "", users.current())
+    if not rows:
+        return "У пам'яті нічого не знайдено."
+    return "\n".join(f"{r['at']}{' (спільне)' if r['owner'] == memory.SHARED else ''}: {r['text']}" for r in rows)
+
+
+def tool_memory_forget(args: dict) -> str:
+    victim = memory.forget(args.get("query") or "", users.current())
+    if not victim:
+        return "НЕ ЗМІНЕНО. Не знайшла в пам'яті такого факту — уточни, що саме забути."
+    return f"Забула: «{victim['text'][:120]}»."
+
 
 
 
@@ -2630,8 +2618,9 @@ DISPATCH = {
     "ha_switch": tool_ha_switch,
     "vacuum_control": tool_vacuum_control,
     "vacuum_schedule": tool_vacuum_schedule,
-    "note_add": tool_note_add,
-    "notes_search": tool_notes_search,
+    "memory_add": tool_memory_add,
+    "memory_search": tool_memory_search,
+    "memory_forget": tool_memory_forget,
     "get_activity_periods": tool_get_activity_periods,
     "log_watched_movie": tool_log_watched_movie,
     "get_watched_movies": tool_get_watched_movies,
@@ -2666,7 +2655,7 @@ def call_tool(name: str, arguments_json: str, user_text: str = "") -> str:
     if name in ADMIN_TOOLS and not users.is_admin():
         return "НЕ ЗМІНЕНО. Ця дія доступна лише адміністратору."
     try:
-        if name in ("qbittorrent_add", "toloka_add", "recipe_add", "ha_switch", "cancel_reminder",
+        if name in ("qbittorrent_add", "toloka_add", "recipe_add", "ha_switch", "cancel_reminder", "memory_add",
                     "grocy_consume", "grocy_add_stock", "grocy_set_stock", "grocy_shopping_add"):
             return handler(args, user_text)
         return handler(args)
