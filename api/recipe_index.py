@@ -19,7 +19,7 @@ from search_backend import embed, qdrant_client
 
 COLLECTION = "grocy_recipes"
 VECTOR_SIZE = 1024  # bge-m3, ADR-0002
-_INTERVAL = 600
+_INTERVAL = 3600
 _MAX_EMBED_CHARS = 4000  # keeps one long recipe within the embedding server's context
 
 
