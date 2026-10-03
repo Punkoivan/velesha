@@ -1,0 +1,30 @@
+# HA: сповістити через Велешу (Telegram), коли пилосос завершив прибирання (ADR-0067).
+# Стани Roborock S7 наприкінці: cleaning → returning → docked (іноді з paused
+# посередині), тож тригер «з cleaning у docked» (ADR-0057) не спрацьовував би.
+# Від старту прибирання чекаємо docked; коротші за 5 хв запуски (тестові /
+# одразу «додому») не сповіщаються.
+alias: Пилосос — сповістити про завершення
+description: cleaning → … → docked, якщо прибирання тривало ≥ 5 хв → вебхук Велеші
+mode: single
+max_exceeded: silent
+triggers:
+  - trigger: state
+    entity_id: vacuum.roborock_s7
+    to: cleaning
+actions:
+  - variables:
+      started: "{{ now().isoformat() }}"
+  - wait_for_trigger:
+      - trigger: state
+        entity_id: vacuum.roborock_s7
+        to: docked
+    timeout: "04:00:00"
+    continue_on_timeout: false
+  - variables:
+      minutes: "{{ ((now() - as_datetime(started)).total_seconds() / 60) | round(0) | int }}"
+  - condition: template
+    value_template: "{{ minutes >= 5 }}"
+  - action: rest_command.velesha_webhook
+    data:
+      name: vacuum-done
+      message: "Пилосос завершив прибирання ({{ minutes }} хв) і повернувся на базу."
