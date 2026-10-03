@@ -186,8 +186,10 @@ def _openai_key() -> str | None:
     return os.environ.get("OPENAI_API_KEY") if os.environ.get("CHAT_PROVIDER") == "openai" else None
 
 
-def learn(user_text: str, answer: str, user: str) -> list[str]:
-    """Automatic fact extraction after a turn; returns the texts actually stored."""
+def learn(user_text: str, answer: str, user: str, personal_only: bool = False) -> list[str]:
+    """Automatic fact extraction after a turn; returns the texts actually stored.
+    personal_only: everything goes to the person's own memory — Telegram (ADR-0071),
+    so text typed there can't rewrite what the whole household is told."""
     if len((user_text or "").split()) < 4:
         return []  # "так", "панда", "увімкни світло" — nothing durable in that
     key = _openai_key()
@@ -212,7 +214,10 @@ def learn(user_text: str, answer: str, user: str) -> list[str]:
         text = (f.get("text") or "").strip()
         if not text:
             continue
-        owner = SHARED if user == SHARED or f.get("scope") != "personal" else user
+        if personal_only and user != SHARED:
+            owner = user
+        else:
+            owner = SHARED if user == SHARED or f.get("scope") != "personal" else user
         row, dup = add(text, owner, "auto")
         if not dup:
             stored.append(text)

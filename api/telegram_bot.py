@@ -50,8 +50,8 @@ def _updates(offset: int) -> list[dict]:
     return _api("getUpdates", offset=offset, timeout=_POLL_TIMEOUT, allowed_updates=["message"]).get("result", [])
 
 
-async def loop(handle: Callable[[str, str], Awaitable[str]]) -> None:
-    """handle(text, person) -> answer; run in its own task per message so its
+async def loop(handle: Callable[[str, str, bool], Awaitable[str]]) -> None:
+    """handle(text, person, forwarded) -> answer; run in its own task per message so its
     contextvars (current user, read-only flag) never leak into the next one."""
     if not telegram_client.available() or not allowed():
         print("telegram bot: off (no token or TELEGRAM_ALLOWED_USERS)", flush=True)
@@ -85,7 +85,8 @@ async def loop(handle: Callable[[str, str], Awaitable[str]]) -> None:
                 continue
             try:
                 await asyncio.to_thread(_api, "sendChatAction", chat_id=chat["id"], action="typing")
-                answer = await asyncio.create_task(handle(text, person))
+                forwarded = bool(msg.get("forward_origin") or msg.get("forward_from") or msg.get("forward_date"))
+                answer = await asyncio.create_task(handle(text, person, forwarded))
             except Exception as e:
                 print(f"telegram handle error: {type(e).__name__}: {e}", flush=True)
                 answer = "Не вдалося відповісти — спробуй ще раз."

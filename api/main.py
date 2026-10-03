@@ -133,6 +133,7 @@ _DEVICE_MARK_RE = re.compile(r"Velesha-User:\s*([^\s,;]+)")
 
 
 def _identify(caller: str, req) -> str:
+    # Trusted only behind VELESHA_API_KEY (ADR-0071): the marker comes from HA's own template.
     if caller != "default":
         return caller  # API-key users (ADR-0035) win
     system = " ".join(m.content or "" for m in req.messages if m.role == "system")
@@ -235,8 +236,26 @@ def health():
     return {"status": "ok"}
 
 
+# Shared secret between HA's llama_cpp entry and this API (ADR-0071). Without
+# it anyone on the LAN got full control, and could forge the
+# "Velesha-User:" device marker to read a person's memory.
+VELESHA_API_KEY = os.environ.get("VELESHA_API_KEY")
+
+
+def _key_ok(authorization: str | None) -> bool:
+    if not VELESHA_API_KEY:
+        return True  # not configured yet: behaviour as before (ADR-0035 no-auth mode)
+    token = (authorization or "").removeprefix("Bearer ").strip()
+    return secrets.compare_digest(token, VELESHA_API_KEY)
+
+
+_UNAUTHORIZED = {"error": {"message": "Invalid API key", "type": "invalid_request_error"}}
+
+
 @app.get("/v1/models")
-def list_models():
+def list_models(authorization: str | None = Header(None)):
+    if not _key_ok(authorization):
+        return JSONResponse(_UNAUTHORIZED, status_code=401)
     return {"object": "list", "data": [{"id": "velesha", "object": "model", "owned_by": "velesha"}]}
 
 
@@ -267,7 +286,7 @@ async def webhook(name: str, request: Request, x_webhook_token: str = Header("")
     return {"ok": True}
 
 
-async def _telegram_message(text: str, person: str) -> str:
+async def _telegram_message(text: str, person: str, forwarded: bool = False) -> str:
     """One Telegram message through the same agent and memory as HA, but read-only (ADR-0070)."""
     users.set_current(person)
     tools_module.set_readonly(True)
@@ -275,14 +294,15 @@ async def _telegram_message(text: str, person: str) -> str:
     # own session: a Telegram chat and a voice conversation in HA don't share short-term context
     answer, acted, _ = await _adk_engine().run(f"tg-{person}", text)
     answer = unfounded_claim(answer, acted)
-    asyncio.create_task(_learn(text, answer, person))
+    if not forwarded:  # someone else's forwarded words are not facts about this home (ADR-0071)
+        asyncio.create_task(_learn(text, answer, person, personal_only=True))
     return answer
 
 
-async def _learn(text: str, answer: str, user: str) -> None:
+async def _learn(text: str, answer: str, user: str, personal_only: bool = False) -> None:
     """After the answer is out: durable facts from this turn into memory (ADR-0069)."""
     try:
-        await asyncio.to_thread(memory.learn, text, answer, user)
+        await asyncio.to_thread(memory.learn, text, answer, user, personal_only)
     except Exception as e:  # never matters to the user's request
         print(f"memory learn error: {e}", flush=True)
 
@@ -458,6 +478,8 @@ def _adk_engine():
 
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatCompletionRequest, authorization: str | None = Header(None)):
+    if not _key_ok(authorization):
+        return JSONResponse(_UNAUTHORIZED, status_code=401)
     caller = users.resolve(authorization)
     if caller is None:
         return JSONResponse({"error": {"message": "Unknown API key", "type": "invalid_request_error"}}, status_code=401)
