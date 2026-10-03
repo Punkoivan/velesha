@@ -581,7 +581,7 @@ def tool_get_sensor_history(args: dict) -> str:
 # "порадь серіал на вечір" (ADR-0021). Deliberately a code gate, not a
 # model decision.
 CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
-                 "grocy_consume", "grocy_add_stock", "grocy_shopping_add", "grocy_product_add",
+                 "grocy_consume", "grocy_add_stock", "grocy_set_stock", "grocy_shopping_add", "grocy_product_add",
                  "grocy_recipe_consume", "grocy_recipe_shopping", "recipe_add",
                  "note_add", "ha_switch", "vacuum_control", "vacuum_schedule",
                  "log_watched_movie", "remind_me", "cancel_reminder"}
@@ -647,6 +647,9 @@ _ADD_VERB_RE = re.compile(
 _GROCY_CONSUME_RE = re.compile(
     r"(використа[вл]|витрати[вл]|списа[вл]|спиши|з['’ʼ]?ї[вл]|випи[вл]|закінчи[вл]|нульов|обнул)", re.IGNORECASE)
 _GROCY_ADD_RE = re.compile(r"(купи[вл]|покла[вл]|поповни|прибав|дода)", re.IGNORECASE)
+# Actual remaining amount, not a delta: "лишилось 12 кг", "закінчився папір" (= 0) — ADR-0068.
+_GROCY_SET_RE = re.compile(r"(лиши[вл]|залиши[вл]|залишок|залишку|закінчи[вл]|нема[є]? більше|більше нема|вже нема|"
+                           r"насправді|перерахува|інвентар)", re.IGNORECASE)
 # Broader than _GROCY_ADD_RE on purpose: creating a brand-new product is a
 # different (and less predictable) natural phrasing than restocking an
 # existing one ("додай товар", "заведи в перелік", "додай в grocy") —
@@ -849,6 +852,8 @@ def tools_for(user_text: str) -> list[dict]:
     # get_watched_movies is already unconditionally in TOOLS (not a CONTROL_TOOL) — do not re-add it.
     if show_all or _LOG_MOVIE_RE.search(text):
         tools = tools + [_log_watched_movie_schema()]
+    if show_all or _GROCY_SET_RE.search(text):
+        tools = tools + [_GROCY_SET_SCHEMA]
     for name, (desc, gate) in _GROCY_SCHEMAS.items():
         if show_all or gate.search(text):  # state-changing: only on an explicit phrase (ADR-0032)
             tools = tools + [_grocy_action_schema(name, desc)]
@@ -1174,29 +1179,90 @@ def _grocy_units() -> dict[int, str]:
     return {u["id"]: u["name"] for u in grocy_client.objects("quantity_units")}
 
 
+# Words that never name a product: prepositions, and units the user says
+# alongside it ("рулон туалетного паперу", "пачка корму") — ADR-0068.
+_MATCH_STOP = {"для", "з", "із", "зі", "в", "у", "на", "і", "й", "та", "до", "від", "по", "ще"}
+_MATCH_UNIT_RE = re.compile(r"^(рулон|пачк|пачц|упаков|уп$|банк|баноч|пляш|шт$|штук|кг$|кілогр|грам|г$|л$|літр|мл$|мілілітр)")
+
+
+_LAT2CYR = str.maketrans("abcdefghijklmnopqrstuvwyz", "абкдефгхійклмнопкрстуввіз")
+
+
+def _match_forms(w: str) -> set[str]:
+    """Spellings to compare a product word by: as is, Latin brand names in Cyrillic
+    («Domestos» ~ «доместосу»), і→е/о alternation (папір/паперу, кіт/кота) and a
+    dropped fleeting о/е (цукор/цукру)."""
+    w = w.lower().replace("'", "").replace("’", "")
+    forms = {w, w.translate(_LAT2CYR).replace("x", "кс")}
+    for f in list(forms):
+        tail = len(f) - 3
+        forms |= {f[:tail] + f[tail:].replace("і", "е"), f[:tail] + f[tail:].replace("і", "о")}
+        m = re.match(r"^(.*[^аеєиіїоуюя])[ое]([^аеєиіїоуюя])$", f)
+        if m:
+            forms.add(m.group(1) + m.group(2))
+    return forms
+
+
+def _word_score(qt: str, w: str) -> float:
+    q = qt.lower().replace("'", "").replace("’", "")
+    m = re.match(r"^(.*[^аеєиіїоуюя])[ое]([^аеєиіїоуюя])$", q)
+    best = 0.0
+    best = _word_score_one(q, w)
+    if m:  # «губок» -> «губк» ~ «губки»; a guess, so it ranks below a direct match
+        best = max(best, min(_word_score_one(m.group(1) + m.group(2), w), 0.9))
+    return best
+
+
+def _word_score_one(a: str, w: str) -> float:
+    best = 0.0
+    for b in _match_forms(w):
+        if a == b:
+            return 1.0
+        common = len(os.path.commonprefix([a, b]))
+        shorter = min(len(a), len(b))
+        if shorter <= 3:
+            # a 3-letter name takes one ending letter («меду» -> «мед», «сиру» -> «сир»), never more («сирок» ≠ «сир»)
+            if len(b) == 3 and a.startswith(b) and len(a) - len(b) == 1:
+                best = max(best, 0.95)
+            continue
+        short_ok = shorter > 5 or (len(a) - common <= 2 and len(b) - common <= 2)  # «яйця»/«яйце», not «корм»/«кориця»
+        if common >= 3 and common >= shorter - (1 if shorter <= 5 else 2) and short_ok:
+            best = max(best, 0.95)  # same stem, different ending: «корму»/«корм», «туалетного»/«туалетний»
+        else:
+            r = difflib.SequenceMatcher(None, a, b).ratio()
+            best = max(best, r if r >= 0.85 else 0.0)
+    return best
+
+
 def _grocy_match(query: str, strict: bool = False) -> list[dict]:
+    return [p for _, p in _grocy_match_scored(query)]
+
+
+def _grocy_match_scored(query: str) -> list[tuple[float, dict]]:
     """Products best matching a name, best first; only clear matches (score > 0.75).
-    strict: every word of the query must match a product word (recipe import —
-    "сир домашній" must not match "Компот домашній")."""
+    Every meaningful word of the query must match some word of the product name
+    ("сир домашній" must not match "Компот домашній", "корму для собаки" must not
+    match "Ганчірка для підлоги"). `strict` is kept for callers; matching is
+    all-words either way since ADR-0068."""
     q = query.lower().strip()
+    words = [w for w in re.findall(r"[\w'’]+", q) if w not in _MATCH_STOP and not _MATCH_UNIT_RE.match(w)]
+    words = words or q.split()
     scored = []
     for p in grocy_client.objects("products"):
         name = p["name"].lower()
         if name == q:
             score = 2.0
-        else:  # inflected forms ("цукру" for "Цукор"): best word-vs-word similarity
-            per_token = []
-            for qt in q.split():
-                best = 0.0
-                for w in name.split():
-                    r = 1.0 if w.startswith(qt) else difflib.SequenceMatcher(None, qt, w).ratio()
-                    best = max(best, r)
-                per_token.append(best)
-            score = (min if strict else max)(per_token, default=0)
+        else:
+            pwords = re.findall(r"[\w'’]+", name)
+            score = min((max((_word_score(qt, w) for w in pwords), default=0.0) for qt in words), default=0.0)
+            # every product word named too («цукру» -> «Цукор», not «цукрова пудра»)
+            if score > 0.75 and all(max(_word_score(qt, w) for qt in words) > 0.75
+                                    for w in pwords if w not in _MATCH_STOP):
+                score += 0.5
         if score > 0.75:
             scored.append((score, p))
-    scored.sort(key=lambda x: -x[0])
-    return [p for _, p in scored]
+    scored.sort(key=lambda x: (-x[0], len(x[1]["name"])))
+    return scored
 
 
 def _fmt_amount(a: float) -> str:
@@ -1230,9 +1296,16 @@ def tool_grocy_shopping_list(args: dict) -> str:
 
 def _grocy_one(product: str):
     """(product, None) for one clear match, else (None, refusal message)."""
-    found = _grocy_match(product)
+    scored = _grocy_match_scored(product)
+    found = [p for _, p in scored]
     if not found:
         return None, f"НЕ ЗМІНЕНО. У Grocy немає продукту «{product}»."
+    # one product whose whole name was said (score >= 1.4: all words both ways) beats partial matches
+    full = [p for sc, p in scored if sc >= 1.4]
+    if len(full) == 1:
+        return full[0], None
+    if len(scored) > 1 and scored[0][0] - scored[1][0] >= 0.09:
+        return found[0], None  # clearly the best: «сирок» -> «плавлений сирок», not «сир …»
     if len(found) > 1 and found[0]["name"].lower() != product.lower().strip():
         # several plausible products and no exact name: never guess which one
         return None, "НЕ ЗМІНЕНО. Уточни, який саме продукт: " + "; ".join(p["name"] for p in found[:5]) + "."
@@ -1263,6 +1336,51 @@ def _grocy_change(kind: str, args: dict) -> str:
 
 def tool_grocy_consume(args: dict) -> str:
     return _grocy_change("consume", args)
+
+
+_GROCY_SET_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "grocy_set_stock",
+        "description": (
+            "Встановити ФАКТИЧНИЙ залишок продукту в Grocy (інвентаризація), коли користувач каже, скільки лишилось: "
+            "«в пачці лишилось 12 кг корму», «залишилось 4 рулони паперу», «закінчився X» (= 0). "
+            "Не для «використав/з'їв N» — це grocy_consume (списання на N)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product": {"type": "string", "description": "Назва продукту, як сказав користувач"},
+                "amount": {"type": "number", "description": "Скільки лишилось (0 — закінчився)"},
+                "unit": {"type": "string", "description": "Одиниця, як сказав користувач (кг, г, рулони, шт...); порожньо — одиниця продукту"},
+            },
+            "required": ["product", "amount"],
+        },
+    },
+}
+_UNIT_ALIASES = {"кілограм": "кг", "кіло": "кг", "грам": "г", "гр": "г", "літр": "л", "мілілітр": "мл"}
+
+
+def tool_grocy_set_stock(args: dict) -> str:
+    amount = args.get("amount")
+    if not isinstance(amount, (int, float)) or amount < 0:
+        return "НЕ ЗМІНЕНО. Залишок має бути числом від 0."
+    p, err = _grocy_one(args.get("product", ""))
+    if err:
+        return err
+    stock_unit = _grocy_units().get(p["qu_id_stock"], "")
+    unit = (args.get("unit") or "").strip().lower()
+    unit = next((v for k, v in _UNIT_ALIASES.items() if unit.startswith(k)), unit)
+    same = not unit or unit == stock_unit.lower() or (len(unit) >= 3 and unit[:4] == stock_unit.lower()[:4]) \
+        or (unit.startswith("штук") and stock_unit.lower() in ("шт", "piece"))
+    qty = float(amount) if same else _convert(float(amount), unit, stock_unit)
+    if qty is None:
+        return f"НЕ ЗМІНЕНО. «{p['name']}» обліковується в {stock_unit}, не можу перевести з «{unit}». Скажи в {stock_unit}."
+    have = grocy_client.product_stock(p["id"])
+    if abs(have - qty) < 1e-9:
+        return f"Без змін: «{p['name']}» і так {_fmt_amount(have)} {stock_unit}."
+    grocy_client.set_stock(p["id"], qty, p.get("location_id") or 1, note="Залишок голосом через Velesha")
+    return f"Залишок «{p['name']}»: було {_fmt_amount(have)} {stock_unit}, тепер {_fmt_amount(qty)} {stock_unit}."
 
 
 def tool_grocy_add_stock(args: dict) -> str:
@@ -2509,6 +2627,7 @@ DISPATCH = {
     "grocy_recipe_shopping": tool_grocy_recipe_shopping,
     "grocy_consume": tool_grocy_consume,
     "grocy_add_stock": tool_grocy_add_stock,
+    "grocy_set_stock": tool_grocy_set_stock,
     "grocy_product_add": tool_grocy_product_add,
     "recipe_cook": tool_recipe_cook,
     "grocy_shopping_add": tool_grocy_shopping_add,

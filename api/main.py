@@ -83,6 +83,7 @@ _CONTROL_LINES = {
         "за id з jellyfin_search; «цей фільм» = те, що зараз грає в jellyfin_sessions\n"
     ),
     "grocy_consume": "- grocy_consume: списати використане зі запасів (кількість в одиницях продукту у Grocy)\n",
+    "grocy_set_stock": "- grocy_set_stock: встановити фактичний залишок («лишилось N», «закінчився» = 0), з одиницею як сказав користувач\n",
     "grocy_recipe_consume": "- grocy_recipe_consume: рецепт з Grocy приготовано — списати інгредієнти\n",
     "grocy_recipe_shopping": "- grocy_recipe_shopping: додати до списку покупок нестачу для рецепта з Grocy\n",
     "recipe_add": (
