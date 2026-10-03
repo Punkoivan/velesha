@@ -37,6 +37,7 @@ import telemetry
 import users
 
 telemetry.setup()  # as early as possible — before tools/adk_agent touch google.adk's own tracer
+import pet_feed
 from tools import CONTROL_TOOLS, PASSTHROUGH_TOOLS, call_tool, tools_for, reminder_poll_loop
 
 WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN")  # guards inbound webhooks from HA (ADR-0057)
@@ -130,7 +131,10 @@ def system_prompt(offered: set[str]) -> str:
         "заголовків, таблиць і посилань) — відповідь можуть озвучувати.\n"
         "Запит може надходити ГОЛОСОМ: тоді це розпізнана мова з можливими помилками (схожі слова, "
         "зіпсовані назви, немає розділових знаків). Тлумач його за змістом і за назвами пристроїв, "
-        "фільмів тощо; не кажи, що користувач «ввів» чи «написав» запит.\n\n"
+        "фільмів тощо; не кажи, що користувач «ввів» чи «написав» запит.\n"
+        "Родина: собака Еббі (доросла, сухий корм Nature's Protection Adult Lamb, 2 рази на день по 75 г). "
+        "Корм списується з Grocy автоматично щодня — не списуй його вручну за годування; "
+        "«купили корм» — це поповнення запасу.\n\n"
         "У тебе є інструменти:\n"
         "- search_knowledge: рецепти (Tandoor) і Jellyfin (що дивився, поради); знімок історії HA може бути застарілим\n"
         "- grocy_stock / grocy_shopping_list: домашні запаси (їжа, господарські товари) і список покупок у Grocy\n"
@@ -172,6 +176,7 @@ telemetry.instrument_fastapi(app)
 @app.on_event("startup")
 async def _start_reminder_poller():
     asyncio.create_task(reminder_poll_loop())
+    asyncio.create_task(pet_feed.loop())  # daily dog-food consumption from Grocy (ADR-0062)
 
 
 @app.on_event("shutdown")
