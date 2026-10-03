@@ -10,6 +10,7 @@ Three tools, chosen to close the exact gaps found in testing:
 """
 
 import asyncio
+import contextvars
 import datetime
 import difflib
 import html
@@ -591,6 +592,19 @@ CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
 # Administration stays with the admin (ADR-0035); everything else is shared.
 ADMIN_TOOLS = {"qbittorrent_status", "qbittorrent_list", "qbittorrent_add", "toloka_search", "toloka_add"}
 PASSTHROUGH_TOOLS = {"toloka_search", "recipe_add", "recipe_cook"}
+
+# Read-only channel (Telegram, ADR-0070): no tool that changes anything is
+# offered, and call_tool refuses one even if a model asks for it anyway.
+WRITE_TOOLS = CONTROL_TOOLS | {"qbittorrent_add", "toloka_add", "recipe_add"}
+_readonly: contextvars.ContextVar[bool] = contextvars.ContextVar("velesha_readonly", default=False)
+
+
+def set_readonly(value: bool) -> None:
+    _readonly.set(value)
+
+
+def readonly() -> bool:
+    return _readonly.get()
 _POWER_RE = re.compile(r"(вимкн|вимик|виключ|погас|увімкн|ввімкн|вмикн|вмик|включ|вруб|запал)", re.IGNORECASE)
 _TIMER_RE = re.compile(r"(таймер|заплан|скасу|відміни|відмін)", re.IGNORECASE)
 _VACUUM_RE = re.compile(r"(робот|пилосос|роборок|roborock|прибир)", re.IGNORECASE)
@@ -898,6 +912,8 @@ def tools_for(user_text: str) -> list[dict]:
         tools = tools + [_memory_forget_schema()]
     if not users.is_admin():
         tools = [x for x in tools if x["function"]["name"] not in ADMIN_TOOLS]
+    if readonly():
+        tools = [x for x in tools if x["function"]["name"] not in WRITE_TOOLS]
     # Defence in depth: a tool baked into the base TOOLS list plus its own gated
     # re-add (a mistake this file has made before, ADR-0045) must never reach the
     # model twice — ADK logs a warning and shadows the second one.
@@ -2654,6 +2670,8 @@ def call_tool(name: str, arguments_json: str, user_text: str = "") -> str:
         return f"Невідомий інструмент: {name}"
     if name in ADMIN_TOOLS and not users.is_admin():
         return "НЕ ЗМІНЕНО. Ця дія доступна лише адміністратору."
+    if readonly() and name in WRITE_TOOLS:
+        return "НЕ ЗМІНЕНО. Цей канал лише для читання — змінити можна голосом через Home Assistant."
     try:
         if name in ("qbittorrent_add", "toloka_add", "recipe_add", "ha_switch", "cancel_reminder", "memory_add",
                     "grocy_consume", "grocy_add_stock", "grocy_set_stock", "grocy_shopping_add"):

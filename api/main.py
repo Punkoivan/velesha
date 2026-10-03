@@ -41,7 +41,9 @@ telemetry.setup()  # as early as possible — before tools/adk_agent touch googl
 import chore_notify
 import memory
 import pet_feed
+import telegram_bot
 import recipe_index
+import tools as tools_module
 from tools import CONTROL_TOOLS, PASSTHROUGH_TOOLS, call_tool, tools_for, reminder_poll_loop
 
 WEBHOOK_TOKEN = os.environ.get("WEBHOOK_TOKEN")  # guards inbound webhooks from HA (ADR-0057)
@@ -204,6 +206,7 @@ async def _start_reminder_poller():
     asyncio.create_task(pet_feed.loop())  # daily dog-food consumption from Grocy (ADR-0062)
     asyncio.create_task(recipe_index.loop())  # Grocy recipes -> Qdrant for search_knowledge (ADR-0063)
     asyncio.create_task(chore_notify.loop())  # Telegram reminders for Grocy chores (ADR-0066)
+    asyncio.create_task(telegram_bot.loop(_telegram_message))  # inbound Telegram, read-only (ADR-0070)
 
 
 @app.on_event("shutdown")
@@ -262,6 +265,18 @@ async def webhook(name: str, request: Request, x_webhook_token: str = Header("")
         except Exception as e:
             print(f"webhook telegram error ({name}): {e}", flush=True)
     return {"ok": True}
+
+
+async def _telegram_message(text: str, person: str) -> str:
+    """One Telegram message through the same agent and memory as HA, but read-only (ADR-0070)."""
+    users.set_current(person)
+    tools_module.set_readonly(True)
+    memory.set_block(await asyncio.to_thread(memory.relevant_block, text, person))
+    # own session: a Telegram chat and a voice conversation in HA don't share short-term context
+    answer, acted, _ = await _adk_engine().run(f"tg-{person}", text)
+    answer = unfounded_claim(answer, acted)
+    asyncio.create_task(_learn(text, answer, person))
+    return answer
 
 
 async def _learn(text: str, answer: str, user: str) -> None:

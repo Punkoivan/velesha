@@ -132,6 +132,8 @@ def _jellyfin_filter(tool, readonly_context=None) -> bool:
     text = _text(readonly_context.user_content) if readonly_context else ""
     if legacy.in_recipe_import(text):  # a bare dish name mid-import is not a film title
         return False
+    if legacy.readonly() and tool.name in JF_WRITE:  # read-only channel (ADR-0070)
+        return False
     if tool.name in JF_READ:
         return True
     if tool.name in JF_PLAY:
@@ -199,7 +201,12 @@ class Engine:
         names = {t["function"]["name"] for t in legacy.tools_for(text)}
         if self.jellyfin and not legacy.in_recipe_import(text):
             names |= jellyfin_names_for(text)
-        return self._system_prompt(names) + memory.context_block()  # relevant long-term facts (ADR-0069)
+        note = ""
+        if legacy.readonly():
+            names -= JF_WRITE
+            note = ("\nКанал: Telegram, лише читання (ADR-0070). Нічого не змінюй і не обіцяй змінити; якщо просять "
+                    "керувати чи змінити запаси/нагадування — скажи, що це можна зробити голосом через Home Assistant.\n")
+        return self._system_prompt(names) + note + memory.context_block()  # relevant long-term facts (ADR-0069)
 
     def _before_model(self, hosted: bool):
         def cb(callback_context, llm_request):
@@ -237,6 +244,8 @@ class Engine:
         if key in state["seen"]:  # same call twice = a loop; stop spending
             return {"result": "Цей самий виклик уже виконано з тим самим результатом. Дай користувачу відповідь."}
         state["seen"].add(key)
+        if tool.name in JF_WRITE and legacy.readonly():
+            return {"result": "НЕ ЗМІНЕНО. Цей канал лише для читання."}
         if tool.name in JF_WRITE:
             blocked = await self._jellyfin_guard(tool.name, args, _text(tool_context.user_content))
             if blocked:
