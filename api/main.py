@@ -37,6 +37,7 @@ import telemetry
 import users
 
 telemetry.setup()  # as early as possible — before tools/adk_agent touch google.adk's own tracer
+import chore_notify
 import pet_feed
 import recipe_index
 from tools import CONTROL_TOOLS, PASSTHROUGH_TOOLS, call_tool, tools_for, reminder_poll_loop
@@ -177,6 +178,7 @@ async def _start_reminder_poller():
     asyncio.create_task(reminder_poll_loop())
     asyncio.create_task(pet_feed.loop())  # daily dog-food consumption from Grocy (ADR-0062)
     asyncio.create_task(recipe_index.loop())  # Grocy recipes -> Qdrant for search_knowledge (ADR-0063)
+    asyncio.create_task(chore_notify.loop())  # Telegram reminders for Grocy chores (ADR-0066)
 
 
 @app.on_event("shutdown")
