@@ -12,6 +12,7 @@ Three tools, chosen to close the exact gaps found in testing:
 import asyncio
 import datetime
 import difflib
+import html
 import json
 import os
 import pathlib
@@ -1532,9 +1533,8 @@ def tool_recipe_add(args: dict, user_text: str = "") -> str:
     return _draft_text(d)
 
 
-# Splits a Grocy recipe's description back into steps. Covers both
-# conventions in Grocy: "1. text" (recipe_add) and "Крок N: ..." (recipes
-# imported from the now-retired Tandoor, ADR-0063).
+# Splits a Grocy recipe's description back into steps: HTML (recipes cleaned
+# up in ADR-0064) or plain "1. text" / "Крок N: ..." text.
 _STEP_SPLIT_RE = re.compile(r"(?:\n|^)\s*(?:\d+\.|Крок\s*\d+:)\s*")
 _COOK_TTL = 60 * 60  # a real cooking session can run long — same window as _fresh_import_ctx
 _cook_state: dict[str, dict] = {}
@@ -1549,7 +1549,58 @@ def _fresh_cook() -> bool:
     return bool(c["steps"]) and time.time() - c["at"] < _COOK_TTL
 
 
+_HTML_BLOCK_RE = re.compile(r"<(p|ol|ul|li|h[1-6]|br|table|blockquote)\b", re.IGNORECASE)
+_SKIP_SECTION_RE = re.compile(r"калорійн", re.IGNORECASE)
+
+
+def _speakable(fragment: str) -> str:
+    """HTML fragment -> one line of plain text for voice."""
+    t = re.sub(r"</li>\s*<li>", "; ", fragment)
+    t = re.sub(r"<br\s*/?>|</(p|ul|ol|blockquote|h\d)>", "\x00", t)  # block boundary
+    t = html.unescape(re.sub(r"<[^>]+>", "", t))
+    t = re.sub(r"\s+", " ", t).strip()
+    t = re.sub(r"([.!?:;…])\s*(\x00\s*)+", r"\1 ", t)  # "сіто.<br>" — the sentence already ended
+    t = re.sub(r"(\s*\x00\s*)+$", "", t)
+    t = re.sub(r"\s*(\x00\s*)+", ". ", t)
+    return t.strip(" ;")
+
+
+def _split_html_steps(description: str) -> list[str]:
+    # Recipes cleaned up to HTML (ADR-0064): steps are <h4> headings, or the
+    # <li> of an <ol> when a recipe has no step headings; <h3> sections
+    # (Подача, Нотатки, ...) follow as extra steps, nutrition tables are skipped.
+    h = re.sub(r"<table>.*?</table>", "", description, flags=re.S)
+    parts = re.split(r"(<h[34]>.*?</h[34]>)", h, flags=re.S)
+    has_h4 = "<h4>" in h
+    steps: list[str] = []
+
+    def list_steps(body: str) -> list[str]:
+        return [_speakable(li) for ol in re.findall(r"<ol>(.*?)</ol>", body, flags=re.S)
+                for li in re.findall(r"<li>(.*?)</li>", ol, flags=re.S)]
+
+    if not has_h4:
+        steps += list_steps(parts[0])
+    for head, body in zip(parts[1::2], parts[2::2]):
+        title = re.sub(r"^\d+\.\s*", "", _speakable(head))
+        if head.startswith("<h3>") and _SKIP_SECTION_RE.search(title):
+            continue
+        if not has_h4 and "<ol>" in body:
+            steps += list_steps(body)
+            continue
+        text = _speakable(body)
+        if text:
+            steps.append(f"{title}: {text}")
+        elif head.startswith("<h4>"):
+            steps.append(title)  # an <h3> with nothing under it is only a section label ("Процес по днях")
+    if not steps:
+        text = _speakable(h)
+        steps = [text] if text else []
+    return [st for st in steps if st]
+
+
 def _split_steps(description: str) -> list[str]:
+    if _HTML_BLOCK_RE.search(description or ""):
+        return _split_html_steps(description)
     parts = [p.strip() for p in _STEP_SPLIT_RE.split(description or "") if p.strip()]
     return parts or ([description.strip()] if (description or "").strip() else [])
 
