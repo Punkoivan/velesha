@@ -1387,10 +1387,30 @@ def _convert(amount: float, from_unit: str, to_unit: str) -> float | None:
     return None  # шт vs г and other mismatches: never guess a conversion
 
 
+# Kitchen measures -> мл; for a product stocked by weight 1 мл ≈ 1 г (good
+# enough for a stock check — the exact wording stays in variable_amount).
+_KITCHEN_ML = {"ч.л.": 5, "ст.л.": 15, "склянка": 240}
+
+
+def _recipe_qty(amount: float, unit: str, stock_unit: str) -> float | None:
+    """Amount in the product's stock unit, or None when it can't be converted (шт vs г, spoons of a spice pack)."""
+    unit, stock_unit = unit.lower().strip(), stock_unit.lower().strip()
+    if unit in _KITCHEN_ML:
+        if stock_unit not in _UNIT_TO_BASE:
+            return None
+        ml = amount * _KITCHEN_ML[unit]
+        return ml / _UNIT_TO_BASE[stock_unit][1]
+    return _convert(amount, unit or stock_unit, stock_unit)
+
+
 def _extract_ingredients(text: str) -> tuple[int, list[dict]]:
+    # The model picks the Grocy product itself from the catalogue: fuzzy
+    # matching on names kept getting it wrong ("картопля" -> "Крохмаль
+    # картопляний", ADR-0065). The code only accepts an exact catalogue name.
     key = _openai_key()
     if not key or guardrails.budget_left() <= 0:
         raise RuntimeError("немає ключа OpenAI або вичерпано денний ліміт токенів")
+    catalogue = "; ".join(sorted({p["name"] for p in grocy_client.objects("products")}, key=str.lower))
     body = {
         "model": os.environ.get("CHAT_MODEL", "gpt-4.1-mini"),
         "response_format": {"type": "json_object"},
@@ -1398,56 +1418,81 @@ def _extract_ingredients(text: str) -> tuple[int, list[dict]]:
         # default (1); this call used to only ever run against gpt-4.1-mini.
         "messages": [
             {"role": "system", "content": (
-                "З рецепта витягни ВСІ інгредієнти. Відповідь — JSON "
-                '{"servings": число, "ingredients": [{"name": "...", "amount": число або null, "unit": "г|кг|мл|л|шт|"}]}. '
-                "name — коротка назва продукту українською в називному відмінку однини (напр. «сіль», «кунжут»). "
-                "Не вигадуй кількостей: якщо в тексті немає — amount null. Без води. Кожен продукт один раз (склади кількості)."
+                "З рецепта витягни ВСІ інгредієнти, нічого не пропускай (і «сіль за смаком», і воду). Відповідь — JSON "
+                '{"servings": число, "ingredients": [{"product": "...", "new_name": "...", "amount": число або null, '
+                '"unit": "г|кг|мл|л|шт|ч.л.|ст.л.|склянка|", "text": "...", "note": "...", "optional": true/false, "group": "..."}]}.\n'
+                "product — ТОЧНА назва з каталогу товарів нижче. Загальна назва з рецепта бере звичайний для кухні різновид "
+                "з каталогу: «олія» → олія з каталогу, «перець» → чорний перець, «паприка» → солодка паприка, «цибулина» → "
+                "цибуля, «яйця» → яйце. Але інший продукт — не збіг: «картопля» ≠ «Крохмаль картопляний», «сир» ≠ «сирок». "
+                "Лише якщо в каталозі цього продукту справді немає — product null і new_name: коротка назва українською "
+                "в називному відмінку однини.\n"
+                "amount/unit — кількість як у рецепті; для діапазону («2–3») — верхня межа; без кількості («за смаком») — null.\n"
+                "text — кількість словами як у рецепті («2–3 ст.л.», «за смаком», «1 банка (400 г)»).\n"
+                "note — лише уточнення, якого нема в text і optional (сорт, нарізка, «або вершки»), коротко; інакше порожньо.\n"
+                "optional — true для «за бажанням», «для подачі», «для прикраси», води для пари.\n"
+                "group — назва частини рецепта, якщо інгредієнти поділені («Тісто», «Крем»); інакше порожньо.\n"
+                "Не вигадуй кількостей. Кожен продукт один раз у межах групи. Перед відповіддю звір: кожен інгредієнт "
+                "з тексту (кожна позиція через «;», кому чи новий рядок) є у відповіді.\n\n"
+                f"Каталог товарів Grocy: {catalogue}"
             )},
             {"role": "user", "content": guardrails.redact(text)},
         ],
     }
     r = requests.post("https://api.openai.com/v1/chat/completions", json=body,
-                      headers={"Authorization": f"Bearer {key}"}, timeout=60)
+                      headers={"Authorization": f"Bearer {key}"}, timeout=90)
     r.raise_for_status()
     data = r.json()
     guardrails.record_usage(data.get("usage", {}).get("total_tokens", 0))
     parsed = json.loads(data["choices"][0]["message"]["content"])
-    return int(parsed.get("servings") or 1), [i for i in parsed.get("ingredients", []) if i.get("name")]
+    items = [i for i in parsed.get("ingredients", []) if i.get("product") or i.get("new_name")]
+    return int(parsed.get("servings") or 1), items
 
 
 def _build_draft(title: str, text: str) -> dict:
     servings, items = _extract_ingredients(text)
     units = _grocy_units()
+    by_name = {p["name"].lower(): p for p in grocy_client.objects("products")}
     lines = []
     for it in items:
         amount, unit = it.get("amount"), (it.get("unit") or "").strip()
-        found = _grocy_match(it["name"], strict=True)
-        line = {"name": it["name"], "amount": amount, "unit": unit, "product": None, "qty": None, "note": ""}
-        if found:
-            p = found[0]
-            line["product"] = p
-            stock_unit = units.get(p["qu_id_stock"], "")
-            if not amount:
-                line["note"] = "кількість не вказана — пропущено"
-            else:
-                qty = _convert(float(amount), unit or stock_unit, stock_unit)
-                if qty is None:
-                    line["note"] = f"одиниці не сходяться ({_fmt_amount(amount)} {unit} проти {stock_unit}) — пропущено"
-                else:
-                    line["qty"] = qty
+        p = by_name.get((it.get("product") or "").lower())
+        name = p["name"] if p else (it.get("new_name") or it.get("product") or "").strip()
+        text_amt = (it.get("text") or "").strip() or (f"{_fmt_amount(amount)} {unit}".strip() if amount else "за смаком")
+        line = {"name": name, "product": p, "text": text_amt, "note": (it.get("note") or "").strip(),
+                "group": (it.get("group") or "").strip(), "mode": "check", "qty": None,
+                # a new product is stocked in the recipe's own unit when it's a real one, else by piece/pack
+                "new_unit": unit if unit.lower() in ("г", "кг", "мл", "л", "шт") else "шт"}
+        if it.get("optional"):
+            line["mode"] = "optional"
+        elif not amount:
+            line["mode"] = "presence"  # «за смаком» — only "is there any", never dropped (ADR-0065)
         else:
-            line["note"] = "нового продукту в Grocy немає — створю без запасу" if amount else "продукту в Grocy немає, кількості немає — пропущено"
+            stock_unit = units.get(p["qu_id_stock"], "") if p else line["new_unit"]
+            qty = _recipe_qty(float(amount), unit, stock_unit)
+            if qty is None:
+                line["mode"] = "presence"  # spoons of a spice stocked in packs: can't convert, still listed
+            else:
+                line["qty"] = qty
         lines.append(line)
     return {"title": title, "servings": servings, "lines": lines}
 
 
 def _draft_text(d: dict) -> str:
     out = [f"Чернетка рецепта «{d['title']}» для Grocy ({d['servings']} порц.):"]
+    group = None
     for l in d["lines"]:
-        amt = f"{_fmt_amount(l['amount'])} {l['unit']}".strip() if l["amount"] else "?"
-        prod = f" → {l['product']['name']}" if l["product"] else ""
-        note = f" ({l['note']})" if l["note"] else ""
-        out.append(f"- {l['name']}: {amt}{prod}{note}")
+        if l["group"] and l["group"] != group:
+            group = l["group"]
+            out.append(f"{group}:")
+        flags = []
+        if not l["product"]:
+            flags.append("новий товар")
+        if l["mode"] == "presence":
+            flags.append("лише наявність")
+        elif l["mode"] == "optional":
+            flags.append("за бажанням")
+        extra = (f", {l['note']}" if l["note"] else "") + (f" [{'; '.join(flags)}]" if flags else "")
+        out.append(f"- {l['name']}: {l['text']}{extra}")
     out.append("Записати в Grocy? Відповідь «так» — запишу; або скажіть, що виправити.")
     return "\n".join(out)
 
@@ -1462,25 +1507,27 @@ def _write_draft(d: dict) -> str:
     loc = next((l["id"] for l in grocy_client.objects("locations") if l["name"] == "Кухня"), 1)
     grp = next((g["id"] for g in grocy_client.objects("product_groups") if g["name"] == "Продукти"), None)
     rid = grocy_client.create("recipes", {"name": d["title"], "type": "normal", "base_servings": d["servings"],
-                                          "description": d.get("description") or "Створено голосом через Velesha"})
-    written, created = 0, 0
+                                          "description": d.get("description") or ""})
+    created = 0
     for l in d["lines"]:
-        if l["product"] is None and l["amount"]:
-            unit_id = units.get(l["unit"].lower()) or units.get("шт") or units.get("piece")
+        if l["product"] is None:
+            unit_id = units.get(l["new_unit"].lower()) or units.get("шт")
             data = {"name": l["name"], "location_id": loc, "qu_id_stock": unit_id, "qu_id_purchase": unit_id,
-                    "qu_id_consume": unit_id, "qu_id_price": unit_id, "description": "Створено при імпорті рецепта"}
+                    "qu_id_consume": unit_id, "qu_id_price": unit_id, "description": "Створено при додаванні рецепта"}
             if grp:
                 data["product_group_id"] = grp
-            pid = grocy_client.create("products", data)
-            l["product"] = {"id": pid, "qu_id_stock": unit_id}
-            l["qty"] = float(l["amount"])
+            l["product"] = {"id": grocy_client.create("products", data), "qu_id_stock": unit_id}
             created += 1
-        if l["product"] is not None and l["qty"]:
-            grocy_client.create("recipes_pos", {"recipe_id": rid, "product_id": l["product"]["id"],
-                                                "amount": l["qty"], "qu_id": l["product"]["qu_id_stock"]})
-            written += 1
+        # same three modes as the ADR-0064 cleanup: amount counts / only "is there any" / never checked
+        grocy_client.create("recipes_pos", {
+            "recipe_id": rid, "product_id": l["product"]["id"], "qu_id": l["product"]["qu_id_stock"],
+            "amount": l["qty"] if l["mode"] == "check" else 0,
+            "variable_amount": l["text"] or None, "note": l["note"] or None, "ingredient_group": l["group"] or None,
+            "only_check_single_unit_in_stock": 1 if l["mode"] == "presence" else 0,
+            "not_check_stock_fulfillment": 1 if l["mode"] == "optional" else 0,
+        })
     _rs().update(draft=None)
-    return f"Створено рецепт «{d['title']}» у Grocy: {written} інгредієнтів, нових продуктів {created}."
+    return f"Створено рецепт «{d['title']}» у Grocy: {len(d['lines'])} інгредієнтів, нових продуктів {created}."
 
 
 def _recipe_add_schema() -> dict:
@@ -1524,11 +1571,12 @@ def tool_recipe_add(args: dict, user_text: str = "") -> str:
     if steps:
         text += "\n" + "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1))
     d = _build_draft(title, text)
-    if not any(l["amount"] for l in d["lines"]):
-        return "НЕ ЗМІНЕНО. Не вдалось розпізнати кількості в інгредієнтах — продиктуй ще раз, напр. «200 г цукру»."
+    if not d["lines"]:
+        return "НЕ ЗМІНЕНО. Не вдалось розпізнати інгредієнти — продиктуй ще раз, напр. «200 г цукру»."
     # Steps kept verbatim (not re-derived from the LLM ingredient-extraction
-    # pass) so recipe_cook can walk through exactly what the user dictated.
-    d["description"] = "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1)) if steps else ""
+    # pass) so recipe_cook can walk through exactly what the user dictated;
+    # HTML like the cleaned-up recipes (ADR-0064), ingredients only on the panel.
+    d["description"] = ("<ol>" + "".join(f"<li>{html.escape(s, quote=False)}</li>" for s in steps) + "</ol>") if steps else ""
     _rs().update(draft=d, at=time.time())
     return _draft_text(d)
 
