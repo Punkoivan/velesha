@@ -41,6 +41,7 @@ telemetry.setup()  # as early as possible — before tools/adk_agent touch googl
 import chore_notify
 import kitchen
 import memory
+import movie_digest
 import pet_feed
 import telegram_bot
 import watch_history
@@ -222,6 +223,7 @@ async def _start_reminder_poller():
     asyncio.create_task(recipe_index.loop())  # Grocy recipes -> Qdrant for search_knowledge (ADR-0063)
     asyncio.create_task(chore_notify.loop())  # Telegram reminders for Grocy chores (ADR-0066)
     asyncio.create_task(watch_history.loop())  # own watch history, survives Jellyfin deletions (ADR-0075)
+    asyncio.create_task(movie_digest.loop())  # monthly "що подивитись" in Telegram (ADR-0076)
     asyncio.create_task(telegram_bot.loop(_telegram_message))  # inbound Telegram, read-only (ADR-0070)
 
 

@@ -32,6 +32,7 @@ import ha_client
 import jellyfin_client
 import telegram_client
 import tmdb
+import watch_history
 import qbit_client
 import toloka_client
 import users
@@ -218,7 +219,8 @@ TOOLS = [
         "function": {
             "name": "log_watched_movie",
             "description": (
-                "Записати особисту оцінку й відгук на переглянутий фільм/серіал (SQLite + індексація для рекомендацій). "
+                "Оцінити переглянутий фільм/серіал: оцінка йде на акаунт TMDB дому (спільна, на ній будуються рекомендації), "
+                "відгук — локально. "
                 "Файл із Jellyfin згодом видаляється (місце обмежене), тому НЕ прив'язуй запис до jellyfin_id — використовуй "
                 "стійкі дані: title — ОРИГІНАЛЬНА назва (англійська/мовою виробництва, не український дубляж; знаєш сам або "
                 "бери provider_ids з jellyfin_get_item і imdb_id), year, і, якщо можеш визначити, imdb_id та режисера — "
@@ -236,8 +238,9 @@ TOOLS = [
                     "genres": {"type": "array", "items": {"type": "string"}, "description": "Жанри з метаданих Jellyfin"},
                     "rating": {"type": "number", "description": "Особиста оцінка 0–10"},
                     "review": {"type": "string", "description": "Короткий відгук користувача, якщо був"},
+                    "kind": {"type": "string", "enum": ["movie", "series"], "description": "фільм чи серіал, якщо зрозуміло"},
                 },
-                "required": ["title", "year", "rating"],
+                "required": ["title", "rating"],
             },
         },
     },
@@ -245,7 +248,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_watched_movies",
-            "description": "Історія особистих оцінок переглянутих фільмів (SQLite), фільтр за жанром чи мінімальною оцінкою.",
+            "description": "Оцінки дому на TMDB (фільми й серіали), найновіші першими; фільтр за мінімальною оцінкою.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2472,6 +2475,9 @@ def _index_movie(row: dict) -> None:
 def tool_log_watched_movie(args: dict) -> str:
     title, year = (args.get("title") or "").strip(), args.get("year")
     rating = args.get("rating")
+    if tmdb.can_rate():  # ADR-0076: ratings live on the household TMDB account
+        return _rate_on_tmdb(title, year if isinstance(year, int) else None, rating,
+                             (args.get("review") or "").strip(), args.get("kind") or "unknown")
     if not title or not isinstance(year, int):
         return "НЕ ЗМІНЕНО. Потрібні назва і рік."
     if not isinstance(rating, (int, float)) or not 0 <= rating <= 10:
@@ -2492,7 +2498,41 @@ def tool_log_watched_movie(args: dict) -> str:
     return f"Записано: «{title}» ({year}) — {rating}/10.{note}"
 
 
+def _rate_on_tmdb(title: str, year: int | None, rating, review: str, kind: str) -> str:
+    if not title:
+        return "НЕ ЗМІНЕНО. Який фільм оцінити?"
+    if not isinstance(rating, (int, float)) or not 0 < rating <= 10:
+        return "НЕ ЗМІНЕНО. Оцінка має бути від 0,5 до 10."
+    info = tmdb.identify(title, year, kind)
+    if not info:
+        return f"НЕ ЗМІНЕНО. Не знайшов «{title}» у TMDB — уточни назву чи рік."
+    stored = tmdb.rate(info["kind"], info["tmdb_id"], rating)
+    try:  # rated = watched, whatever Jellyfin remembers
+        c = watch_history._conn()
+        watch_history._upsert(c, {**info, "resolved": 1, "raw": title},
+                              datetime.datetime.now(datetime.timezone.utc).isoformat()[:19])
+        c.commit()
+        c.close()
+    except Exception as e:
+        print(f"watch history upsert error: {e}", flush=True)
+    if review:
+        try:
+            movies_db.log_watched_movie(info["title"], info["year"], info["imdb_id"], None, [], stored, review)
+        except Exception as e:
+            print(f"review save error: {e}", flush=True)
+    what = f"«{info['uk_title']}»" + (f" ({info['title']}, {info['year']})" if info["title"] != info["uk_title"] else f" ({info['year']})")
+    return f"Оцінено {what}: {stored:g}/10 на TMDB."
+
+
 def tool_get_watched_movies(args: dict) -> str:
+    if tmdb.can_rate():
+        rows = tmdb.rated()
+        if args.get("min_rating") is not None:
+            rows = [r for r in rows if (r["rating"] or 0) >= float(args["min_rating"])]
+        if not rows:
+            return "Оцінок на TMDB ще немає."
+        return "\n".join(f"{r['title']} ({r['year']}, {'серіал' if r['kind'] == 'series' else 'фільм'}): {r['rating']:g}/10"
+                         for r in rows[:30])
     rows = movies_db.get_watched_movies(min_rating=args.get("min_rating"), genre=args.get("genre"))
     if not rows:
         return "Оцінок переглянутих фільмів ще немає."

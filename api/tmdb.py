@@ -161,8 +161,12 @@ def discover(kind: str = "movie", genre: str = "", year_from: int | None = None,
     if year_to:
         params[f"{date}.lte"] = f"{year_to}-12-31"
     seen = watched_tmdb_ids()
+    liked, disliked, rated_ids = taste(media)
+    seen |= {str(i) for i in rated_ids}
+    # gather more than asked, then reorder by the household's taste (ADR-0076)
+    want = count * 3 if liked or disliked else count
     out: list[dict] = []
-    for page in range(1, 6):
+    for page in range(1, 8):
         data = _get(f"/discover/{media}", page=page, **params)
         for r in data.get("results") or []:
             if str(r["id"]) in seen:
@@ -171,11 +175,86 @@ def discover(kind: str = "movie", genre: str = "", year_from: int | None = None,
             if not r.get("overview") or r.get("original_language") == "ru":
                 continue
             d = r.get("release_date") or r.get("first_air_date") or ""
+            score = (r.get("vote_average") or 0) + liked.get(r["id"], 0) - 1.5 * disliked.get(r["id"], 0)
             out.append({"tmdb_id": r["id"], "title": r.get("title") or r.get("name"),
                         "original": r.get("original_title") or r.get("original_name"), "year": d[:4],
-                        "rating": r.get("vote_average"), "overview": (r.get("overview") or "").split(". ")[0]})
-            if len(out) >= count:
-                return out
-        if page >= (data.get("total_pages") or 1):
+                        "rating": r.get("vote_average"), "overview": (r.get("overview") or "").split(". ")[0],
+                        "score": score, "because_liked": liked.get(r["id"], 0)})
+            if len(out) >= want:
+                break
+        if len(out) >= want or page >= (data.get("total_pages") or 1):
             break
+    out.sort(key=lambda x: -x["score"])
+    return out[:count]
+
+
+# --- household account: ratings and taste (ADR-0076) -------------------------------------------
+_account: dict = {}
+_recs_cache: dict[tuple[str, int], tuple[float, set[int]]] = {}
+
+
+def can_rate() -> bool:
+    return available() and bool(os.environ.get("TMDB_SESSION_ID"))
+
+
+def _sid() -> dict:
+    return {"session_id": os.environ["TMDB_SESSION_ID"]}
+
+
+def _account_id() -> int:
+    if "id" not in _account:
+        _account["id"] = _get("/account", **_sid())["id"]
+    return _account["id"]
+
+
+def rate(media_kind: str, tmdb_id: str, rating: float) -> float:
+    """TMDB accepts 0.5–10 in 0.5 steps; returns the value actually stored."""
+    value = min(10.0, max(0.5, round(float(rating) * 2) / 2))
+    media = "tv" if media_kind == "series" else "movie"
+    r = requests.post(f"{_API}/{media}/{tmdb_id}/rating", params={"api_key": os.environ["TMDB_API_KEY"], **_sid()},
+                      json={"value": value}, timeout=20)
+    r.raise_for_status()
+    return value
+
+
+def rated() -> list[dict]:
+    """Every movie and series rated on the account, newest first."""
+    out = []
+    for media, kind in (("movies", "movie"), ("tv", "series")):
+        page = 1
+        while True:
+            data = _get(f"/account/{_account_id()}/rated/{media}", page=page, sort_by="created_at.desc", **_sid())
+            for r in data.get("results") or []:
+                d = r.get("release_date") or r.get("first_air_date") or ""
+                out.append({"kind": kind, "tmdb_id": r["id"], "title": r.get("title") or r.get("name"),
+                            "year": d[:4], "rating": r.get("rating")})
+            if page >= (data.get("total_pages") or 1):
+                break
+            page += 1
     return out
+
+
+def _recommended_ids(media: str, tmdb_id: int) -> set[int]:
+    import time as _t
+    hit = _recs_cache.get((media, tmdb_id))
+    if hit and _t.time() - hit[0] < 3600:
+        return hit[1]
+    ids = {r["id"] for r in (_get(f"/{media}/{tmdb_id}/recommendations").get("results") or [])}
+    _recs_cache[(media, tmdb_id)] = (_t.time(), ids)
+    return ids
+
+
+def taste(media: str) -> tuple[dict[int, int], dict[int, int], set[int]]:
+    """(liked-neighbour counts, disliked-neighbour counts, already rated ids) for one media type."""
+    if not can_rate():
+        return {}, {}, set()
+    kind = "series" if media == "tv" else "movie"
+    mine = [r for r in rated() if r["kind"] == kind]
+    liked, disliked = {}, {}
+    for r in [r for r in mine if (r["rating"] or 0) >= 7.5][:12]:
+        for i in _recommended_ids(media, r["tmdb_id"]):
+            liked[i] = liked.get(i, 0) + 1
+    for r in [r for r in mine if (r["rating"] or 10) <= 5][:8]:
+        for i in _recommended_ids(media, r["tmdb_id"]):
+            disliked[i] = disliked.get(i, 0) + 1
+    return liked, disliked, {r["tmdb_id"] for r in mine}
