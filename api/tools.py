@@ -31,6 +31,7 @@ import movies_db
 import ha_client
 import jellyfin_client
 import telegram_client
+import tmdb
 import qbit_client
 import toloka_client
 import users
@@ -879,7 +880,8 @@ def tools_for(user_text: str) -> list[dict]:
         tools = tools + [_qbit_add_schema()]
     # Read-only and cheap, so always offered: a word gate looked only at the
     # latest message and lost the request in multi-turn talk (ADR-0029).
-    tools = tools + [_toloka_search_schema(), _get_reminders_schema(), _memory_search_schema(), _recipe_cook_schema()]
+    tools = tools + [_toloka_search_schema(), _get_reminders_schema(), _memory_search_schema(), _recipe_cook_schema(),
+                     _movie_recommend_schema()]
     # recipe_add writes, but only behind its own
     # draft+confirm+title-match gate (never on the first call) — so, same
     # reasoning as ADR-0029, always offered rather than word-gated. A regex
@@ -1955,6 +1957,35 @@ def tool_recipe_cook(args: dict) -> str:
     return "НЕ ЗМІНЕНО. Не зрозумів дію — start, next, repeat чи restart?"
 
 
+def _movie_recommend_schema() -> dict:
+    return {"type": "function", "function": {
+        "name": "movie_recommend",
+        "description": ("Порадити НОВІ фільми чи серіали, яких дім ще не дивився (історія переглядів з Jellyfin, "
+                        "переживає видалення файлів), з TMDB: за жанром і роками, найкраще оцінені першими. "
+                        "Для «що виходило за останні N років» — year_from = поточний рік − N. Не для того, що вже є "
+                        "в бібліотеці (це jellyfin_*)."),
+        "parameters": {"type": "object", "properties": {
+            "kind": {"type": "string", "enum": ["movie", "series"], "description": "фільм чи серіал"},
+            "genre": {"type": "string", "description": "жанр українською (бойовик, комедія, трилер...); порожньо — будь-який"},
+            "year_from": {"type": "integer"}, "year_to": {"type": "integer"},
+            "count": {"type": "integer", "description": "скільки (за замовчуванням 10)"}},
+            "required": ["kind"]}}}
+
+
+def tool_movie_recommend(args: dict) -> str:
+    if not tmdb.available():
+        return "Рекомендації недоступні: немає ключа TMDB."
+    try:
+        rows = tmdb.discover(args.get("kind") or "movie", (args.get("genre") or "").strip(),
+                             args.get("year_from"), args.get("year_to"), int(args.get("count") or 10))
+    except ValueError as e:
+        return str(e)
+    if not rows:
+        return "Нічого непереглянутого за цими умовами не знайшлось."
+    return "\n".join(f"{i}. {r['title']} ({r['year']}), оцінка {r['rating']:.1f} — {r['overview']}"
+                     for i, r in enumerate(rows, 1))
+
+
 _NOTES_DIR = pathlib.Path(__file__).parent / "data" / "notes"  # pre-ADR-0069 notes, migrated into memory on startup
 _NOTE_ADD_RE = re.compile(r"(запиши|запам'ятай|запамятай|занотуй|додай нотатку|нова нотатка|збережи нотатку)", re.IGNORECASE)
 _FORGET_RE = re.compile(r"(забудь|видали з пам|прибери з пам|це неправда|вже не актуально)", re.IGNORECASE)
@@ -2726,6 +2757,7 @@ DISPATCH = {
     "ha_switch": tool_ha_switch,
     "vacuum_control": tool_vacuum_control,
     "vacuum_schedule": tool_vacuum_schedule,
+    "movie_recommend": tool_movie_recommend,
     "memory_add": tool_memory_add,
     "memory_search": tool_memory_search,
     "memory_forget": tool_memory_forget,

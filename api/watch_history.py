@@ -164,6 +164,9 @@ async def loop() -> None:
         try:
             if await asyncio.to_thread(_due, dt.datetime.now(TZ)):
                 print(f"watch history sync: {await asyncio.to_thread(sync)}", flush=True)
+                import tmdb  # lazy: tmdb imports this module
+                if tmdb.available():  # deleted titles known by name only -> TMDB ids
+                    print(f"watch history tmdb: {await asyncio.to_thread(tmdb.resolve_history)}", flush=True)
         except Exception as e:  # Jellyfin down — try again next hour
             print(f"watch history sync error: {e}", flush=True)
         await asyncio.sleep(_TICK)
