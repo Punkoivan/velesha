@@ -43,6 +43,7 @@ import kitchen
 import memory
 import pet_feed
 import telegram_bot
+import watch_history
 import recipe_index
 import tools as tools_module
 from tools import CONTROL_TOOLS, PASSTHROUGH_TOOLS, call_tool, tools_for, reminder_poll_loop
@@ -220,6 +221,7 @@ async def _start_reminder_poller():
     asyncio.create_task(pet_feed.loop())  # daily dog-food consumption from Grocy (ADR-0062)
     asyncio.create_task(recipe_index.loop())  # Grocy recipes -> Qdrant for search_knowledge (ADR-0063)
     asyncio.create_task(chore_notify.loop())  # Telegram reminders for Grocy chores (ADR-0066)
+    asyncio.create_task(watch_history.loop())  # own watch history, survives Jellyfin deletions (ADR-0075)
     asyncio.create_task(telegram_bot.loop(_telegram_message))  # inbound Telegram, read-only (ADR-0070)
 
 
