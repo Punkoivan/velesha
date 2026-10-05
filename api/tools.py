@@ -24,6 +24,7 @@ import zoneinfo
 import requests
 
 import guardrails
+import kitchen
 import memory
 import grocy_client
 import movies_db
@@ -1671,6 +1672,11 @@ def _draft_text(d: dict) -> str:
             flags.append("за бажанням")
         extra = (f", {l['note']}" if l["note"] else "") + (f" [{'; '.join(flags)}]" if flags else "")
         out.append(f"- {l['name']}: {l['text']}{extra}")
+    if d.get("steps"):
+        out.append("Кроки:")
+        for i, st in enumerate(d["steps"], 1):
+            kit = _step_kit(st)
+            out.append(f"{i}. {st['text']}" + (f" [{kit}]" if kit else ""))
     out.append("Записати в Grocy? Відповідь «так» — запишу; або скажіть, що виправити.")
     return "\n".join(out)
 
@@ -1751,12 +1757,76 @@ def tool_recipe_add(args: dict, user_text: str = "") -> str:
     d = _build_draft(title, text)
     if not d["lines"]:
         return "НЕ ЗМІНЕНО. Не вдалось розпізнати інгредієнти — продиктуй ще раз, напр. «200 г цукру»."
-    # Steps kept verbatim (not re-derived from the LLM ingredient-extraction
-    # pass) so recipe_cook can walk through exactly what the user dictated;
-    # HTML like the cleaned-up recipes (ADR-0064), ingredients only on the panel.
-    d["description"] = ("<ol>" + "".join(f"<li>{html.escape(s, quote=False)}</li>" for s in steps) + "</ol>") if steps else ""
+    # Steps rewritten for the household's own equipment — device, attachment,
+    # mode/program, settings — from kitchen.yaml only (ADR-0074); on any
+    # failure the user's steps stay as dictated. HTML like ADR-0064.
+    d["steps"] = _adapt_steps(title, ingredients, steps) if steps else []
+    d["description"] = ("<ol>" + "".join(f"<li>{_step_html(st)}</li>" for st in d["steps"]) + "</ol>") if d["steps"] else ""
     _rs().update(draft=d, at=time.time())
     return _draft_text(d)
+
+
+def _step_kit(st: dict) -> str:
+    """'Ninja Combi SFP700EU · Air Fry · 200 °C, 15 хв · пластина для хрусткості' — empty for a hands-only step."""
+    return " · ".join(x for x in (st.get("device"), st.get("mode"), st.get("settings"), st.get("attachment")) if x)
+
+
+def _step_html(st: dict) -> str:
+    kit = _step_kit(st)
+    text = html.escape(st["text"], quote=False)
+    return f"<strong>{html.escape(kit, quote=False)}</strong><br>{text}" if kit else text
+
+
+def _adapt_steps(title: str, ingredients: list[str], steps: list[str]) -> list[dict]:
+    plain = [{"text": s} for s in steps]
+    key = _openai_key()
+    if not key or guardrails.budget_left() <= 0 or not kitchen.devices():
+        return plain
+    body = {
+        "model": os.environ.get("CHAT_MODEL", "gpt-4.1-mini"),
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": (
+                "Перепиши кроки рецепта під кухонну техніку цього дому. Для кожного кроку, де доречна техніка, вкажи "
+                "пристрій, насадку і режим/програму, а також температуру й час. Бери пристрої, насадки й режими ЛИШЕ з "
+                "каталогу нижче, назви — дослівно як у каталозі; чого там немає — не вигадуй. Крок, який робиться руками "
+                "(помити, нарізати ножем, викласти), лишай без техніки. Якщо техніка змінює спосіб готування (духовка → "
+                "мультипіч), перерахуй температуру й час під неї — у settings лише самі значення; у тексті кроку не "
+                "пояснюй, звідки вони і що змінилось. Поля device, attachment, mode — лише назва, без слів «насадка», "
+                "«режим» і без лапок. Не додавай і не прибирай кроків без потреби; мова — українська, коротко.\n"
+                'Відповідь — JSON {"steps": [{"text": "що робити", "device": "назва з каталогу або порожньо", '
+                '"attachment": "насадка або порожньо", "mode": "режим/програма або порожньо", '
+                '"settings": "температура, час, швидкість або порожньо"}]}.\n\n'
+                f"Каталог техніки:\n{kitchen.catalogue()}"
+            )},
+            {"role": "user", "content": guardrails.redact(
+                f"Рецепт: {title}\nІнгредієнти: {'; '.join(ingredients)}\nКроки:\n"
+                + "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1)))},
+        ],
+    }
+    try:
+        r = requests.post("https://api.openai.com/v1/chat/completions", json=body,
+                          headers={"Authorization": f"Bearer {key}"}, timeout=90)
+        r.raise_for_status()
+        data = r.json()
+        guardrails.record_usage(data.get("usage", {}).get("total_tokens", 0))
+        out = json.loads(data["choices"][0]["message"]["content"]).get("steps") or []
+    except Exception as e:
+        print(f"recipe adapt error: {e}", flush=True)
+        return plain
+    known = {d["name"] for d in kitchen.devices()}
+    adapted = []
+    for st in out:
+        text = (st.get("text") or "").strip()
+        if not text:
+            continue
+        device = (st.get("device") or "").strip()
+        if device and device not in known:  # never a device the house doesn't have
+            device, st["attachment"], st["mode"] = "", "", ""
+        clean = lambda v: re.sub(r"^(насадка|режим|програма)\s*", "", (v or "").strip(), flags=re.IGNORECASE).strip(" «»\"")
+        adapted.append({"text": text, "device": device, "attachment": clean(st.get("attachment")),
+                        "mode": clean(st.get("mode")), "settings": (st.get("settings") or "").strip()})
+    return adapted or plain
 
 
 # Splits a Grocy recipe's description back into steps: HTML (recipes cleaned

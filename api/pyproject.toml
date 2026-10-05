@@ -20,4 +20,5 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi>=0.63b1",
     "opentelemetry-instrumentation-requests>=0.63b1",
     "openinference-instrumentation-google-adk>=0.1.28",
+    "pyyaml>=6.0.3",
 ]

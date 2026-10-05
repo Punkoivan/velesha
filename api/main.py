@@ -39,6 +39,7 @@ import users
 
 telemetry.setup()  # as early as possible — before tools/adk_agent touch google.adk's own tracer
 import chore_notify
+import kitchen
 import memory
 import pet_feed
 import telegram_bot
@@ -166,6 +167,9 @@ def system_prompt(offered: set[str]) -> str:
            "на такі прохання відповідай, що це можна з телефона власника.\n")
         + (f"Робот-пилосос Roborock S7 вдома ще звуть: {', '.join(tools_module.vacuum_aliases())}.\n"
            if tools_module.vacuum_aliases() else "")
+        + (f"Кухонна техніка вдома: {kitchen.summary()}. Шукаючи чи складаючи рецепт, обирай такий, що "
+           "готується цією технікою; recipe_add сам допише в кроки пристрій, насадку і режим.\n"
+           if kitchen.summary() else "")
         + "Родина: собака Еббі (доросла, сухий корм Nature's Protection Adult Lamb, 2 рази на день по 75 г). "
         "Корм списується з Grocy автоматично щодня — не списуй його вручну за годування; "
         "«купили корм» — це поповнення запасу.\n\n"
