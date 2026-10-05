@@ -47,6 +47,21 @@ def current() -> str:
     return _current.get() or "default"
 
 
+# The HA device a request came from (its "Velesha-User:" marker, ADR-0069).
+# A shared device can still be trusted with admin tools (ADR-0072).
+_device: contextvars.ContextVar[str] = contextvars.ContextVar("velesha_device", default="")
+
+
+def set_device(device: str) -> None:
+    _device.set(device)
+
+
+def _admin_devices() -> set[str]:
+    return {d.strip().lower() for d in os.environ.get("VELESHA_ADMIN_DEVICES", "").split(",") if d.strip()}
+
+
 def is_admin(name: str | None = None) -> bool:
+    if name is None and _device.get() in _admin_devices():
+        return True
     name = name or current()
     return name == "default" and not _users() or name in _admins()

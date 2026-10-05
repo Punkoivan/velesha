@@ -14,6 +14,7 @@ export JELLYFIN_PLAY_ALLOW=kodi,firefox,tv5  # playback targets: Kodi, laptop Je
 export TELEGRAM_CHAT_ID_DEFAULT=333751480  # Telegram notification channel alongside HA notify (ADR-0054)
 export TELEGRAM_ALLOWED_USERS="333751480:punka"  # who may talk to the bot (Telegram user id:person), ADR-0070
 export VELESHA_DEFAULT_USER=punka  # requests without a device marker (ADR-0069)
+export VELESHA_ADMIN_DEVICES=s21-voice  # shared device trusted with admin tools: torrents, Toloka (ADR-0072)
 export VELESHA_ADMINS=punka  # Toloka/qBittorrent (ADR-0035); without it "punka" lost admin when ADR-0069 renamed "default"
 export VELESHA_NAMES="punka:Іван"  # how memory names a person in auto-learned facts
 export VELESHA_DEVICE_USERS="punka-mobile:punka,punka-ha:punka,mac:punka"  # HA user -> person; other devices are shared

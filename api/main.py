@@ -140,8 +140,10 @@ def _identify(caller: str, req) -> str:
     found = _DEVICE_MARK_RE.search(system)
     if not found:
         return os.environ.get("VELESHA_DEFAULT_USER", "punka")  # no marker: single-user behaviour as before
+    device = found.group(1).strip().lower()
+    users.set_device(device)  # admin tools may be granted per device (ADR-0072)
     devices = dict(p.split(":", 1) for p in os.environ.get("VELESHA_DEVICE_USERS", "").split(",") if ":" in p)
-    return devices.get(found.group(1).strip().lower(), memory.SHARED)
+    return devices.get(device, memory.SHARED)
 
 
 def system_prompt(offered: set[str]) -> str:
@@ -157,7 +159,12 @@ def system_prompt(offered: set[str]) -> str:
         "Запит може надходити ГОЛОСОМ: тоді це розпізнана мова з можливими помилками (схожі слова, "
         "зіпсовані назви, немає розділових знаків). Тлумач його за змістом і за назвами пристроїв, "
         "фільмів тощо; не кажи, що користувач «ввів» чи «написав» запит.\n"
-        "Родина: собака Еббі (доросла, сухий корм Nature's Protection Adult Lamb, 2 рази на день по 75 г). "
+        "Якщо для прохання немає потрібного інструмента (недоступно з цього пристрою чи каналу або такого "
+        "вміння немає), одразу коротко скажи це одним реченням — не шукай обхідних шляхів іншими інструментами.\n"
+        + ("" if users.is_admin() else
+           "З цього пристрою недоступні торенти: qBittorrent (статус, роздача, список) і Толока — "
+           "на такі прохання відповідай, що це можна з телефона власника.\n")
+        + "Родина: собака Еббі (доросла, сухий корм Nature's Protection Adult Lamb, 2 рази на день по 75 г). "
         "Корм списується з Grocy автоматично щодня — не списуй його вручну за годування; "
         "«купили корм» — це поповнення запасу.\n\n"
         "У тебе є інструменти:\n"
