@@ -1,0 +1,82 @@
+# HA: кожна зміна статусу пилососа і кожна помилка — у Telegram через Велешу (ADR-0073).
+# Окремо від vacuum-done (ADR-0067), який шле підсумок «завершив прибирання (N хв)».
+alias: Пилосос — усі статуси і помилки
+description: sensor.roborock_s7_status / vacuum_error → вебхук Велеші, українською
+mode: queued
+max: 10
+triggers:
+  - trigger: state
+    entity_id: sensor.roborock_s7_status
+    id: status
+    not_from: [unknown, unavailable]
+    not_to: [unknown, unavailable]
+  - trigger: state
+    entity_id: sensor.roborock_s7_vacuum_error
+    id: error
+    not_from: [unknown, unavailable]
+    not_to: [unknown, unavailable, none]
+actions:
+  - variables:
+      statuses:
+        starting: запускається
+        charger_disconnected: знято з бази
+        idle: очікує
+        remote_control_active: дистанційне керування
+        cleaning: прибирає
+        returning_home: повертається на базу
+        manual_mode: ручний режим
+        charging: заряджається
+        charging_problem: проблема із зарядкою
+        paused: на паузі
+        spot_cleaning: прибирає пляму
+        error: помилка
+        shutting_down: вимикається
+        updating: оновлює прошивку
+        docking: паркується на базі
+        going_to_target: їде до цілі
+        zoned_cleaning: прибирає зону
+        segment_cleaning: прибирає кімнату
+        emptying_the_bin: спорожнює контейнер
+        washing_the_mop: миє швабру
+        going_to_wash_the_mop: їде мити швабру
+        mapping: будує карту
+        charging_complete: заряджено
+        device_offline: не на зв'язку
+        locked: заблоковано
+      errors:
+        lidar_blocked: заблокований лідар
+        bumper_stuck: застряг бампер
+        wheels_suspended: колеса в повітрі (підняли або застряг)
+        cliff_sensor_error: брудний датчик перепаду висоти
+        main_brush_jammed: заплуталась основна щітка
+        side_brush_jammed: заплуталась бічна щітка
+        wheels_jammed: заклинило колеса
+        robot_trapped: застряг, не може виїхати
+        no_dustbin: немає контейнера для пилу
+        strainer_error: проблема з фільтром контейнера
+        low_battery: низький заряд
+        charging_error: помилка зарядки
+        battery_error: помилка батареї
+        wall_sensor_dirty: брудний датчик стіни
+        robot_tilted: нахилився
+        side_brush_error: несправна бічна щітка
+        fan_error: несправний вентилятор
+        dock: проблема з базою
+        optical_flow_sensor_dirt: брудний оптичний датчик
+        vertical_bumper_pressed: натиснутий верхній бампер
+        dock_locator_error: не бачить базу
+        return_to_dock_fail: не може повернутися на базу
+        nogo_zone_detected: заїхав у заборонену зону
+        filter_blocked: забитий фільтр
+        cannot_cross_carpet: не може переїхати килим
+        internal_error: внутрішня помилка
+        temperature_protection: захист від перегріву
+      room: "{{ states('sensor.roborock_s7_current_room') }}"
+      cleaning_now: "{{ trigger.to_state.state in ['cleaning', 'segment_cleaning', 'zoned_cleaning', 'spot_cleaning'] }}"
+      message: >-
+        {% if trigger.id == 'error' %}Пилосос: помилка — {{ errors.get(trigger.to_state.state, trigger.to_state.state) }}.
+        {% else %}Пилосос {{ statuses.get(trigger.to_state.state, trigger.to_state.state) }}{% if cleaning_now and room not in ['unknown', 'unavailable', ''] %} ({{ room }}){% endif %}.{% endif %}
+  - action: rest_command.velesha_webhook
+    data:
+      name: vacuum-status
+      message: "{{ message }}"

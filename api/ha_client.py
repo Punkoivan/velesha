@@ -114,6 +114,13 @@ def delete_calendar_event(entity_id: str, uid: str) -> bool:
     return bool(_ws_command({"type": "calendar/event/delete", "entity_id": entity_id, "uid": uid}).get("success"))
 
 
+def entity_aliases(entity_id: str) -> list[str]:
+    """Names the household gave an entity in HA (Settings → entity → aliases), e.g.
+    "Бичок" for the vacuum. Websocket only, like the area registry."""
+    r = _ws_command({"type": "config/entity_registry/get", "entity_id": entity_id}).get("result") or {}
+    return [a for a in (r.get("aliases") or []) if a]
+
+
 def area_registry() -> list[dict]:
     """Not exposed over plain REST (/api/config/area_registry -> 404) — same
     websocket the frontend's own area settings page uses."""

@@ -272,6 +272,8 @@ class Engine:
 
     def _after_tool(self, tool, args, tool_context, tool_response):
         result = tool_response.get("result", "") if isinstance(tool_response, dict) else ""
+        if isinstance(result, str) and result:
+            print(f"RESULT {tool.name} {' '.join(result.split())[:200]}", flush=True)  # audit: what the tool said (ADR-0073)
         if tool.name in legacy.CONTROL_TOOLS and isinstance(result, str) and result.startswith(self._action_ok):
             _req.get()["acted"] = True
         if tool.name in JF_WRITE and isinstance(tool_response, dict):

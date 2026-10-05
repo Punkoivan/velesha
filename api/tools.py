@@ -608,6 +608,28 @@ def readonly() -> bool:
 _POWER_RE = re.compile(r"(вимкн|вимик|виключ|погас|увімкн|ввімкн|вмикн|вмик|включ|вруб|запал)", re.IGNORECASE)
 _TIMER_RE = re.compile(r"(таймер|заплан|скасу|відміни|відмін)", re.IGNORECASE)
 _VACUUM_RE = re.compile(r"(робот|пилосос|роборок|roborock|прибир)", re.IGNORECASE)
+_alias_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+def vacuum_aliases() -> list[str]:
+    """The vacuum's HA aliases ("Бичок"), cached 10 min. "запускай бичка на кухню" went to a
+    Jellyfin film search because the gate only knew generic words (ADR-0073)."""
+    hit = _alias_cache.get(VACUUM_ENTITY)
+    if not hit or time.time() - hit[0] > 600:
+        try:
+            _alias_cache[VACUUM_ENTITY] = (time.time(), ha_client.entity_aliases(VACUUM_ENTITY))
+        except Exception as e:
+            print(f"vacuum alias fetch error: {e}", flush=True)
+            _alias_cache[VACUUM_ENTITY] = (time.time(), (hit or (0, []))[1])
+    return _alias_cache[VACUUM_ENTITY][1]
+
+
+def _mentions_vacuum(text: str) -> bool:
+    if _VACUUM_RE.search(text):
+        return True
+    said = re.findall(r"[\w'’]+", text.lower())
+    # inflected alias: «бичка» / «бичкові» for «Бичок» — same stem matching as product names
+    return any(_word_score(w, a.lower()) > 0.75 for a in vacuum_aliases() for w in said)
 _COMMAND_RE = re.compile(
     r"(включ|увімкн|ввімкн|вмикн|вмик|переключ|запуст|постав|відтвор|\bplay\b|пауз|продовж|зупин|стоп|наступн|"
     r"попередн|далі|пропуст|перенес|принес|\bnext\b|\bstop\b|\bpause\b)",
@@ -892,7 +914,7 @@ def tools_for(user_text: str) -> list[dict]:
             tools = tools + [_grocy_recipe_schema(name, desc)]
     if show_all or _POWER_RE.search(text) or _TIMER_RE.search(text):
         tools = tools + [_HA_SWITCH_SCHEMA]
-    if show_all or _VACUUM_RE.search(text):
+    if show_all or _mentions_vacuum(text):
         tools = tools + [_vacuum_schema(), _vacuum_schedule_schema()]
     if show_all or _REMIND_RE.search(text):
         tools = tools + [_remind_me_schema()]

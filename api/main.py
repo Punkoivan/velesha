@@ -164,6 +164,8 @@ def system_prompt(offered: set[str]) -> str:
         + ("" if users.is_admin() else
            "З цього пристрою недоступні торенти: qBittorrent (статус, роздача, список) і Толока — "
            "на такі прохання відповідай, що це можна з телефона власника.\n")
+        + (f"Робот-пилосос Roborock S7 вдома ще звуть: {', '.join(tools_module.vacuum_aliases())}.\n"
+           if tools_module.vacuum_aliases() else "")
         + "Родина: собака Еббі (доросла, сухий корм Nature's Protection Adult Lamb, 2 рази на день по 75 г). "
         "Корм списується з Grocy автоматично щодня — не списуй його вручну за годування; "
         "«купили корм» — це поповнення запасу.\n\n"
