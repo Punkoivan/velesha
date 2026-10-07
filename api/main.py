@@ -388,7 +388,12 @@ def _complete_hosted(messages: list[dict], tools: list[dict]) -> dict | None:
 
 # Every action tool starts its success message with one of these; anything else
 # ("НЕ ДОДАНО …", "Не …", errors) means nothing was changed.
-_ACTION_OK = ("Запущено", "Додано", "Поставлено на паузу", "Продовжено", "Зупинено", "Списано", "Створено", "Записано", "Позначено", "Вимкнено", "Увімкнено", "Заплановано", "Скасовано")
+# How a CONTROL tool's answer starts when it really did something — anything else counts as not done
+# for the claim guard. Every new action tool's success wording must be here (ADR-0081: rating,
+# telegram_send, memory and stock-correction answers were missing and got a false "nothing changed").
+_ACTION_OK = ("Запущено", "Додано", "Поставлено на паузу", "Продовжено", "Зупинено", "Списано", "Створено", "Записано",
+              "Позначено", "Вимкнено", "Увімкнено", "Заплановано", "Скасовано",
+              "Оцінено", "Надіслано", "Запам'ятала", "Забула", "Залишок «")
 _CLAIM_RE = re.compile(
     r"(?<!не )\b(додав|додала|додано|запустив|запустила|запущено|поставив на паузу|поставлено на паузу|"
     r"продовжив|продовжено|зупинив|зупинено|списав|списала|списано|позначив|позначила|позначено|вимкнув|вимкнула|вимкнено|увімкнув|увімкнула|увімкнено|заплановано|скасував|скасувала|скасовано)\b", re.IGNORECASE)
