@@ -31,6 +31,7 @@ import movies_db
 import ha_client
 import jellyfin_client
 import telegram_client
+import safe_http
 import tmdb
 import watch_history
 import qbit_client
@@ -1056,6 +1057,8 @@ def tool_qbittorrent_add(args: dict, user_text: str) -> str:
     url, category = args.get("url", "").strip(), args.get("category", "")
     if not url or url not in user_text:
         return "Посилання має бути дослівно з повідомлення користувача."
+    if not safe_http.is_torrent_link(url):  # qBittorrent would fetch any URL from the HA host (ADR-0080)
+        return "НЕ ДОДАНО. Приймаю лише magnet-посилання або посилання з toloka.to."
     cats = {n: c for n, c in qbit_client.categories().items() if c.get("savePath")}
     if category not in cats:
         return f"Невідома категорія '{category}'. Доступні: {', '.join(cats)}."
@@ -1137,7 +1140,12 @@ def tool_film_find(args: dict) -> str:
     try:
         if url:
             info = tmdb.from_url(url.group(0))
-        elif tmdb.available():
+    except safe_http.Blocked as e:
+        return f"Не відкриваю це посилання: {e}. Скажи назву фільму — пошукаю."
+    except Exception as e:
+        print(f"film_find url error: {type(e).__name__}: {e}", flush=True)
+    try:
+        if not url and tmdb.available():  # a title, not a link
             found = tmdb.identify(q)
             info = tmdb.details(found["kind"], found["tmdb_id"]) if found else None
     except Exception as e:

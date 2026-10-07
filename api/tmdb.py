@@ -9,6 +9,8 @@ import sqlite3
 
 import requests
 
+import safe_http
+
 import watch_history
 
 _API = "https://api.themoviedb.org/3"
@@ -324,12 +326,13 @@ def from_url(url: str) -> dict | None:
         return details("series" if m.group(1) == "tv" else "movie", m.group(2))
     if m := re.search(r"//([a-z\-]+)\.(?:m\.)?wikipedia\.org/wiki/([^?#]+)", url):
         return _from_wikipedia(m.group(1), m.group(2))
-    # any other page: its og:title / <title> as a film name
-    html = requests.get(url, headers=_UA, timeout=20).text
+    # any other page: its og:title / <title> as a film name — fetched through the SSRF guard (ADR-0080)
+    html = safe_http.fetch_html(url)
     m = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', html) \
         or re.search(r"<title[^>]*>([^<]+)</title>", html, re.I)
     if not m:
         return None
     name = re.split(r"\s+[|—–-]\s+", requests.utils.unquote(m.group(1)).strip())[0]
+    name = re.sub(r"[\x00-\x1f]", " ", name)[:200]  # only a short title leaves the page, never its text
     found = identify(name)
     return details(found["kind"], found["tmdb_id"]) if found else None
