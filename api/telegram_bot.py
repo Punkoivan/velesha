@@ -72,6 +72,11 @@ async def loop(handle: Callable[..., Awaitable[str]]) -> None:
         print("telegram bot: off (no token or TELEGRAM_ALLOWED_USERS)", flush=True)
         return
     offset = _offset()
+    try:  # "/v" in the command menu of family groups
+        await asyncio.to_thread(_api, "setMyCommands", commands=[{"command": "v", "description": "Звернутися до Велеші"}],
+                                scope={"type": "all_group_chats"})
+    except Exception as e:
+        print(f"telegram setMyCommands error: {type(e).__name__}", flush=True)
     if not _STATE.exists():  # first start: whatever piled up before the bot listened is not a question to answer now
         try:
             old = await asyncio.to_thread(_api, "getUpdates", offset=-1, timeout=0)
@@ -100,9 +105,26 @@ async def loop(handle: Callable[..., Awaitable[str]]) -> None:
             if not text:
                 await asyncio.to_thread(telegram_client.send_message, chat["id"], "Поки що розумію лише текст.")
                 continue
-            if in_family:  # privacy mode delivers only mentions/replies; drop the "@bot" itself
+            if in_family:
+                # Privacy mode (kept on, ADR-0077) delivers commands and replies to the bot's own messages — not
+                # plain @mentions. Act on "/v ...", a reply to Velesha, or a mention (if privacy is ever turned
+                # off); anything else in the family chat is not addressed to her and is skipped without a trace.
                 bot = await asyncio.to_thread(_bot_username)
-                text = re.sub(rf"@{re.escape(bot)}\b", "", text, flags=re.IGNORECASE).strip() if bot else text
+                cmd = re.match(r"^/(\w+)(?:@(\w+))?\s*(.*)$", text, re.S)
+                reply_to_bot = ((msg.get("reply_to_message") or {}).get("from") or {}).get("username", "").lower() == bot.lower()
+                if cmd and (not cmd.group(2) or cmd.group(2).lower() == bot.lower()):
+                    if cmd.group(1).lower() == "start" or not cmd.group(3).strip():
+                        await asyncio.to_thread(telegram_client.send_message, chat["id"],
+                                                "Привіт! Пишіть «/v прохання» (напр. «/v що там з кормом») або відповідайте на мої повідомлення.",
+                                                msg.get("message_id"))
+                        continue
+                    if cmd.group(1).lower() not in ("v", "velesha"):
+                        continue
+                    text = cmd.group(3).strip()
+                elif bot and re.search(rf"@{re.escape(bot)}\b", text, re.IGNORECASE):
+                    text = re.sub(rf"@{re.escape(bot)}\b", "", text, flags=re.IGNORECASE).strip()
+                elif not reply_to_bot:
+                    continue
             try:
                 await asyncio.to_thread(_api, "sendChatAction", chat_id=chat["id"], action="typing")
                 forwarded = bool(msg.get("forward_origin") or msg.get("forward_from") or msg.get("forward_date"))

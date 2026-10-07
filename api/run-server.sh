@@ -13,10 +13,11 @@ export REMINDER_NOTIFY_DEFAULT=notify.mobile_app_punkas26  # server-side reminde
 export JELLYFIN_PLAY_ALLOW=kodi,firefox,tv5  # playback targets: Kodi, laptop Jellyfin Web (ADR-0052), Jellyfin Android TV app on the iNeXT box (device "TV5")
 export TELEGRAM_CHAT_ID_DEFAULT=333751480  # Telegram notification channel alongside HA notify (ADR-0054)
 export TELEGRAM_ALLOWED_USERS="333751480:punka"  # who may talk to the bot (Telegram user id:person), ADR-0070
+export TELEGRAM_FAMILY_CHATS="-4024131871"  # «Кіно і не тільки» — family group with home control (ADR-0077)
 export VELESHA_DEFAULT_USER=punka  # requests without a device marker (ADR-0069)
-export VELESHA_ADMIN_DEVICES=s21-voice  # shared device trusted with admin tools: torrents, Toloka (ADR-0072)
+export VELESHA_ADMIN_DEVICES=s21-voice,telegram-group  # shared device trusted with admin tools: torrents, Toloka (ADR-0072)
 export VELESHA_ADMINS=punka  # Toloka/qBittorrent (ADR-0035); without it "punka" lost admin when ADR-0069 renamed "default"
-export VELESHA_NAMES="punka:Іван"  # how memory names a person in auto-learned facts
+export VELESHA_NAMES="punka:Іван,marina:Марина"  # how memory names a person in auto-learned facts
 export VELESHA_DEVICE_USERS="punka-mobile:punka,punka-ha:punka,mac:punka"  # HA user -> person; other devices are shared
 export PET_FEED_PRODUCT_ID=169  # Grocy: dog food, consumed automatically per feeding (ADR-0062)
 export PET_FEED_SCHEDULE="08:00=75,20:00=75"  # feeding time=grams
