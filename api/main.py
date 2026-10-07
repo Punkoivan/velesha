@@ -306,7 +306,8 @@ async def webhook(name: str, request: Request, x_webhook_token: str = Header("")
 
 
 async def _telegram_message(text: str, person: str, forwarded: bool = False, group: str | None = None) -> str:
-    """One Telegram message through the same agent and memory as HA. Private chat: read-only (ADR-0070).
+    """One Telegram message through the same agent and memory as HA. Private chat: control, personal
+    memory (ADR-0084; was read-only in ADR-0070).
     The family group: full control like s21-voice, shared memory, its own session (ADR-0077)."""
     if group:
         users.set_current(memory.SHARED)
@@ -318,7 +319,7 @@ async def _telegram_message(text: str, person: str, forwarded: bool = False, gro
             asyncio.create_task(_learn(text, answer, memory.SHARED))
         return answer
     users.set_current(person)
-    tools_module.set_readonly(True)
+    users.set_device("telegram-private")  # control like the family group, own memory (ADR-0084)
     memory.set_block(await asyncio.to_thread(memory.relevant_block, text, person))
     # own session: a Telegram chat and a voice conversation in HA don't share short-term context
     answer, acted, _ = await _adk_engine().run(f"tg-{person}", text)
