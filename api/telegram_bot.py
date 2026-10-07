@@ -73,8 +73,11 @@ async def loop(handle: Callable[..., Awaitable[str]]) -> None:
         return
     offset = _offset()
     try:  # "/v" in the command menu of family groups
-        await asyncio.to_thread(_api, "setMyCommands", commands=[{"command": "v", "description": "Звернутися до Велеші"}],
+        await asyncio.to_thread(_api, "setMyCommands", commands=[{"command": "v", "description": "Звернутися до Велеші"},
+                                {"command": "t", "description": "Знайти фільм на Толоці (посилання чи назва)"}],
                                 scope={"type": "all_group_chats"})
+        await asyncio.to_thread(_api, "setMyCommands", scope={"type": "all_private_chats"},
+                                commands=[{"command": "t", "description": "Знайти фільм на Толоці (посилання чи назва)"}])
     except Exception as e:
         print(f"telegram setMyCommands error: {type(e).__name__}", flush=True)
     if not _STATE.exists():  # first start: whatever piled up before the bot listened is not a question to answer now
@@ -105,6 +108,9 @@ async def loop(handle: Callable[..., Awaitable[str]]) -> None:
             if not text:
                 await asyncio.to_thread(telegram_client.send_message, chat["id"], "Поки що розумію лише текст.")
                 continue
+            pcmd = re.match(r"^/t(?:@\w+)?\s+(.+)$", text, re.S) if chat.get("type") == "private" else None
+            if pcmd:  # same "/t" in a private chat
+                text = f"Знайди на Толоці: {pcmd.group(1).strip()}"
             if in_family:
                 # Privacy mode (kept on, ADR-0077) delivers commands and replies to the bot's own messages — not
                 # plain @mentions. Act on "/v ...", a reply to Velesha, or a mention (if privacy is ever turned
@@ -118,9 +124,12 @@ async def loop(handle: Callable[..., Awaitable[str]]) -> None:
                                                 "Привіт! Пишіть «/v прохання» (напр. «/v що там з кормом») або відповідайте на мої повідомлення.",
                                                 msg.get("message_id"))
                         continue
-                    if cmd.group(1).lower() not in ("v", "velesha"):
+                    if cmd.group(1).lower() == "t":  # "/t <link or title>" — find on Toloka (ADR-0079)
+                        text = f"Знайди на Толоці: {cmd.group(3).strip()}"
+                    elif cmd.group(1).lower() not in ("v", "velesha"):
                         continue
-                    text = cmd.group(3).strip()
+                    else:
+                        text = cmd.group(3).strip()
                 elif bot and re.search(rf"@{re.escape(bot)}\b", text, re.IGNORECASE):
                     text = re.sub(rf"@{re.escape(bot)}\b", "", text, flags=re.IGNORECASE).strip()
                 elif not reply_to_bot:

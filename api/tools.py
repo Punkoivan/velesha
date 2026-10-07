@@ -595,8 +595,8 @@ CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
 
 # Answered verbatim, without a second model call (ADR-0024).
 # Administration stays with the admin (ADR-0035); everything else is shared.
-ADMIN_TOOLS = {"qbittorrent_status", "qbittorrent_list", "qbittorrent_add", "toloka_search", "toloka_add"}
-PASSTHROUGH_TOOLS = {"toloka_search", "recipe_add", "recipe_cook"}
+ADMIN_TOOLS = {"qbittorrent_status", "qbittorrent_list", "qbittorrent_add", "toloka_search", "toloka_add", "film_find"}
+PASSTHROUGH_TOOLS = {"toloka_search", "film_find", "recipe_add", "recipe_cook"}
 
 # Read-only channel (Telegram, ADR-0070): no tool that changes anything is
 # offered, and call_tool refuses one even if a model asks for it anyway.
@@ -884,7 +884,7 @@ def tools_for(user_text: str) -> list[dict]:
     # Read-only and cheap, so always offered: a word gate looked only at the
     # latest message and lost the request in multi-turn talk (ADR-0029).
     tools = tools + [_toloka_search_schema(), _get_reminders_schema(), _memory_search_schema(), _recipe_cook_schema(),
-                     _movie_recommend_schema(), _library_to_watch_schema()]
+                     _movie_recommend_schema(), _library_to_watch_schema(), _film_find_schema()]
     # recipe_add writes, but only behind its own
     # draft+confirm+title-match gate (never on the first call) — so, same
     # reasoning as ADR-0029, always offered rather than word-gated. A regex
@@ -1115,6 +1115,48 @@ def tool_toloka_search(args: dict) -> str:
         + (f" (вільно {_gib(free)}, ще докачується {_gib(free - available)})" if free != available else "")
         + f". Щоб додати — скажи номер і розділ ({', '.join(cats)}), напр.: «додай 2 в {cats[0] if cats else 'фільми'}»."
     )
+
+
+def _film_find_schema() -> dict:
+    return {"type": "function", "function": {
+        "name": "film_find",
+        "description": ("Знайти фільм/серіал на Толоці за ПОСИЛАННЯМ (Вікіпедія, IMDb, TMDB чи будь-який сайт про фільм) "
+                        "або за назвою: спершу визначає, що це за фільм (українська й оригінальна назва, рік), потім шукає "
+                        "роздачі. Коли користувач дав посилання — завжди цей інструмент."),
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "посилання або назва, як дав користувач"}}, "required": ["query"]}}}
+
+
+def tool_film_find(args: dict) -> str:
+    """Link or title -> which film it is (TMDB) -> Toloka, Ukrainian title first (ADR-0079)."""
+    q = (args.get("query") or "").strip()
+    if not q:
+        return "Що шукати — посилання чи назву?"
+    url = re.search(r"https?://\S+", q)
+    info = None
+    try:
+        if url:
+            info = tmdb.from_url(url.group(0))
+        elif tmdb.available():
+            found = tmdb.identify(q)
+            info = tmdb.details(found["kind"], found["tmdb_id"]) if found else None
+    except Exception as e:
+        print(f"film_find identify error: {type(e).__name__}: {e}", flush=True)
+    if not info:
+        if url:
+            return "Не вдалося визначити фільм за посиланням — скажи назву, і я пошукаю."
+        return tool_toloka_search({"query": q})
+    what = "серіал" if info["kind"] == "series" else "фільм"
+    head = f"Це «{info['uk_title']}»" + (f" ({info['title']}, {info['year']}, {what})." if info["title"] != info["uk_title"]
+                                          else f" ({info['year']}, {what}).")
+    tried = []
+    for query in dict.fromkeys(x for x in (info["uk_title"], info["title"],
+                                             f"{info['title']} {info['year'] or ''}".strip()) if x):
+        tried.append(query)
+        result = tool_toloka_search({"query": query})
+        if not result.startswith("На Толоці нічого"):
+            return head + "\n" + result
+    return head + f" На Толоці не знайшов (шукав: {'; '.join(tried)})."
 
 
 def tool_toloka_add(args: dict, user_text: str) -> str:
@@ -2902,6 +2944,7 @@ DISPATCH = {
     "vacuum_control": tool_vacuum_control,
     "vacuum_schedule": tool_vacuum_schedule,
     "movie_recommend": tool_movie_recommend,
+    "film_find": tool_film_find,
     "library_to_watch": tool_library_to_watch,
     "telegram_send": tool_telegram_send,
     "memory_add": tool_memory_add,

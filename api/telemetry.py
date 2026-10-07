@@ -36,11 +36,17 @@ _configured = False
 _BOT_TOKEN_RE = re.compile(r"/bot[^/]+/")
 
 
+_SECRET_PARAM_RE = re.compile(r"((?:api_key|session_id|token)=)[^&]+")
+
+
 def _redact_url(span, request) -> None:
     for key in ("http.url", "url.full"):
         url = span.attributes.get(key) if span.attributes else None
-        if url and "/bot" in url:
-            span.set_attribute(key, _BOT_TOKEN_RE.sub("/botREDACTED/", url))
+        if not url:
+            continue
+        clean = _SECRET_PARAM_RE.sub(r"\1REDACTED", _BOT_TOKEN_RE.sub("/botREDACTED/", url))  # TMDB key too (ADR-0079)
+        if clean != url:
+            span.set_attribute(key, clean)
 
 
 def enabled() -> bool:

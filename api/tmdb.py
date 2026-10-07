@@ -20,10 +20,15 @@ def available() -> bool:
     return bool(os.environ.get("TMDB_API_KEY"))
 
 
+class TmdbError(RuntimeError):
+    """An HTTP failure WITHOUT the request URL: it carries api_key/session_id (ADR-0079)."""
+
+
 def _get(path: str, **params) -> dict:
     r = requests.get(f"{_API}{path}", params={"api_key": os.environ["TMDB_API_KEY"], "language": _LANG, **params},
                      timeout=20)
-    r.raise_for_status()
+    if not r.ok:
+        raise TmdbError(f"TMDB {path}: HTTP {r.status_code}")
     return r.json()
 
 
@@ -258,3 +263,73 @@ def taste(media: str) -> tuple[dict[int, int], dict[int, int], set[int]]:
         for i in _recommended_ids(media, r["tmdb_id"]):
             disliked[i] = disliked.get(i, 0) + 1
     return liked, disliked, {r["tmdb_id"] for r in mine}
+
+
+# --- a film from a link (ADR-0079) ------------------------------------------------------------------
+_UA = {"User-Agent": "Velesha/1.0 (home assistant; film lookup)"}
+
+
+def details(kind: str, tmdb_id: str) -> dict:
+    media = "tv" if kind == "series" else "movie"
+    d = _get(f"/{media}/{tmdb_id}")
+    date = d.get("release_date") or d.get("first_air_date") or ""
+    return {"kind": kind, "tmdb_id": str(tmdb_id), "uk_title": d.get("title") or d.get("name"),
+            "title": d.get("original_title") or d.get("original_name"), "year": int(date[:4]) if date[:4].isdigit() else None,
+            "imdb_id": d.get("imdb_id")}
+
+
+def _from_imdb(imdb_id: str) -> dict | None:
+    found = _get(f"/find/{imdb_id}", external_source="imdb_id")
+    for key, kind in (("movie_results", "movie"), ("tv_results", "series")):
+        if found.get(key):
+            return details(kind, found[key][0]["id"])
+    return None
+
+
+def _from_wikipedia(lang: str, page: str) -> dict | None:
+    """Wikipedia article -> its Wikidata item -> TMDB / IMDb ids (P4947 film, P4983 series, P345 IMDb)."""
+    r = requests.get(f"https://{lang}.wikipedia.org/w/api.php", headers=_UA, timeout=20, params={
+        "action": "query", "prop": "pageprops", "titles": requests.utils.unquote(page).replace("_", " "),
+        "redirects": 1, "format": "json"}).json()
+    qid = next((p.get("pageprops", {}).get("wikibase_item") for p in r.get("query", {}).get("pages", {}).values()), None)
+    if not qid:
+        return None
+    claims = requests.get(f"https://www.wikidata.org/wiki/Special:EntityData/{qid}.json", headers=_UA,
+                          timeout=20).json()["entities"][qid].get("claims", {})
+
+    def value(prop):
+        try:
+            return claims[prop][0]["mainsnak"]["datavalue"]["value"]
+        except (KeyError, IndexError):
+            return None
+    # Wikidata is sometimes wrong (a series with a film id) — try each id in turn
+    for prop, kind in (("P4947", "movie"), ("P4983", "series")):
+        if value(prop):
+            try:
+                return details(kind, value(prop))
+            except TmdbError:
+                pass
+    if value("P345"):
+        return _from_imdb(value("P345"))
+    # no ids on Wikidata: the article title, minus "(фільм)" / "(TV series)"
+    name = re.sub(r"\s*\([^)]*\)\s*$", "", requests.utils.unquote(page).replace("_", " "))
+    found = identify(name)
+    return details(found["kind"], found["tmdb_id"]) if found else None
+
+
+def from_url(url: str) -> dict | None:
+    if m := re.search(r"imdb\.com/(?:[a-z]{2}/)?title/(tt\d+)", url):
+        return _from_imdb(m.group(1))
+    if m := re.search(r"themoviedb\.org/(movie|tv)/(\d+)", url):
+        return details("series" if m.group(1) == "tv" else "movie", m.group(2))
+    if m := re.search(r"//([a-z\-]+)\.(?:m\.)?wikipedia\.org/wiki/([^?#]+)", url):
+        return _from_wikipedia(m.group(1), m.group(2))
+    # any other page: its og:title / <title> as a film name
+    html = requests.get(url, headers=_UA, timeout=20).text
+    m = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', html) \
+        or re.search(r"<title[^>]*>([^<]+)</title>", html, re.I)
+    if not m:
+        return None
+    name = re.split(r"\s+[|—–-]\s+", requests.utils.unquote(m.group(1)).strip())[0]
+    found = identify(name)
+    return details(found["kind"], found["tmdb_id"]) if found else None
