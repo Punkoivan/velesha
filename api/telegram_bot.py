@@ -78,7 +78,8 @@ async def loop(handle: Callable[[str, str, bool], Awaitable[str]]) -> None:
             text, chat, sender = msg.get("text"), msg.get("chat") or {}, msg.get("from") or {}
             person = allowed().get(str(sender.get("id")))
             if not person or chat.get("type") != "private":
-                print(f"telegram: ignored message from {sender.get('id')} ({chat.get('type')})", flush=True)
+                print(f"telegram: ignored message from {sender.get('id')} {sender.get('first_name', '')!r} in "
+                      f"{chat.get('type')} chat {chat.get('id')} {chat.get('title', '')!r}", flush=True)  # ids for the allowlist
                 continue
             if not text:
                 await asyncio.to_thread(telegram_client.send_message, chat["id"], "Поки що розумію лише текст.")
