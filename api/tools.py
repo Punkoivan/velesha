@@ -590,7 +590,7 @@ def tool_get_sensor_history(args: dict) -> str:
 CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
                  "grocy_consume", "grocy_add_stock", "grocy_set_stock", "grocy_shopping_add", "grocy_product_add",
                  "grocy_recipe_consume", "grocy_recipe_shopping", "recipe_add",
-                 "memory_add", "memory_forget", "ha_switch", "vacuum_control", "vacuum_schedule",
+                 "memory_add", "memory_forget", "telegram_send", "ha_switch", "vacuum_control", "vacuum_schedule",
                  "log_watched_movie", "remind_me", "cancel_reminder"}
 
 # Answered verbatim, without a second model call (ADR-0024).
@@ -938,6 +938,8 @@ def tools_for(user_text: str) -> list[dict]:
         tools = tools + [_memory_add_schema()]
     if show_all or _FORGET_RE.search(text):
         tools = tools + [_memory_forget_schema()]
+    if show_all or _TELEGRAM_SEND_RE.search(text):
+        tools = tools + [_telegram_send_schema()]
     if not users.is_admin():
         tools = [x for x in tools if x["function"]["name"] not in ADMIN_TOOLS]
     if readonly():
@@ -1989,6 +1991,45 @@ def tool_movie_recommend(args: dict) -> str:
                      for i, r in enumerate(rows, 1))
 
 
+_TELEGRAM_SEND_RE = re.compile(r"(телеграм|телеґрам|telegram|в групу|у групу|в особист|у особист|скинь|перешли|надішли|відправ)", re.IGNORECASE)
+
+
+def _telegram_send_schema() -> dict:
+    return {"type": "function", "function": {
+        "name": "telegram_send",
+        "description": ("Надіслати текст у Telegram: to=me — в особисті тому, хто говорить; to=group — у сімейну групу. "
+                        "Лише за проханням скинути/надіслати/переслати в Telegram. Якщо не ясно куди — спершу спитай."),
+        "parameters": {"type": "object", "properties": {
+            "to": {"type": "string", "description": "me — тому, хто говорить; group — сімейна група; або ім'я людини (напр. «Іван»)"},
+            "text": {"type": "string", "description": "Повний текст повідомлення"}},
+            "required": ["to", "text"]}}}
+
+
+def tool_telegram_send(args: dict) -> str:
+    text = (args.get("text") or "").strip()
+    if not text:
+        return "НЕ ЗМІНЕНО. Що саме надіслати?"
+    if args.get("to") == "group":
+        chats = [c.strip() for c in os.environ.get("TELEGRAM_FAMILY_CHATS", "").split(",") if c.strip()]
+        if not chats:
+            return "НЕ ЗМІНЕНО. Сімейну групу ще не налаштовано."
+        chat, where = chats[0], "у сімейну групу"
+    else:
+        user = users.current()
+        target = (args.get("to") or "me").strip()
+        if target.lower() != "me":  # a name from the household ("Іван", "Івану") -> that person
+            names = dict(p.split(":", 1) for p in os.environ.get("VELESHA_NAMES", "").split(",") if ":" in p)
+            user = next((key for key, name in names.items() if _word_score(target.lower(), name.lower()) > 0.75), "")
+        ids = [uid for uid, who in (p.split(":", 1) for p in os.environ.get("TELEGRAM_ALLOWED_USERS", "").split(",") if ":" in p)
+               if who.strip() == user]
+        if user == memory.SHARED or not ids:
+            # a shared device (s21, the tablet) doesn't know who is speaking (ADR-0077)
+            return "НЕ ЗМІНЕНО. З цього пристрою не знаю, кому в особисті — спитай: у групу чи в особисті кому саме?"
+        chat, where = ids[0], "в особисті"
+    telegram_client.send_message(chat, text[:4000])
+    return f"Надіслано в Telegram {where}."
+
+
 _NOTES_DIR = pathlib.Path(__file__).parent / "data" / "notes"  # pre-ADR-0069 notes, migrated into memory on startup
 _NOTE_ADD_RE = re.compile(r"(запиши|запам'ятай|запамятай|занотуй|додай нотатку|нова нотатка|збережи нотатку)", re.IGNORECASE)
 _FORGET_RE = re.compile(r"(забудь|видали з пам|прибери з пам|це неправда|вже не актуально)", re.IGNORECASE)
@@ -2798,6 +2839,7 @@ DISPATCH = {
     "vacuum_control": tool_vacuum_control,
     "vacuum_schedule": tool_vacuum_schedule,
     "movie_recommend": tool_movie_recommend,
+    "telegram_send": tool_telegram_send,
     "memory_add": tool_memory_add,
     "memory_search": tool_memory_search,
     "memory_forget": tool_memory_forget,

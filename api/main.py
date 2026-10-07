@@ -111,6 +111,8 @@ _CONTROL_LINES = {
     "vacuum_schedule": "- vacuum_schedule: запланувати запуск пилососа на пізніше (time/date або in_minutes), за потреби room і mode — той самий календар, що й нагадування\n",
     "memory_add": "- memory_add: запам'ятати факт надовго (лише за явним проханням); memory_search — що ти пам'ятаєш\n",
     "memory_forget": "- memory_forget: забути факт, коли користувач просить «забудь…»\n",
+    "telegram_send": ("- telegram_send: надіслати текст у Telegram — в особисті тому, хто говорить (to=me), або в сімейну "
+                      "групу (to=group); якщо з прохання не ясно куди — спитай; передавай повний текст, який надсилаєш\n"),
     "grocy_add_stock": "- grocy_add_stock: додати куплене до запасів\n",
     "grocy_product_add": "- grocy_product_add: завести НОВИЙ товар у Grocy з початковим запасом — коли grocy_add_stock каже, що товару ще нема\n",
     "grocy_shopping_add": "- grocy_shopping_add: додати продукт до списку покупок\n",
@@ -303,8 +305,18 @@ async def webhook(name: str, request: Request, x_webhook_token: str = Header("")
     return {"ok": True}
 
 
-async def _telegram_message(text: str, person: str, forwarded: bool = False) -> str:
-    """One Telegram message through the same agent and memory as HA, but read-only (ADR-0070)."""
+async def _telegram_message(text: str, person: str, forwarded: bool = False, group: str | None = None) -> str:
+    """One Telegram message through the same agent and memory as HA. Private chat: read-only (ADR-0070).
+    The family group: full control like s21-voice, shared memory, its own session (ADR-0077)."""
+    if group:
+        users.set_current(memory.SHARED)
+        users.set_device("telegram-group")  # admin via VELESHA_ADMIN_DEVICES, like s21-voice
+        memory.set_block(await asyncio.to_thread(memory.relevant_block, text, memory.SHARED))
+        answer, acted, _ = await _adk_engine().run(f"tg-group-{group}", text)
+        answer = unfounded_claim(answer, acted)
+        if not forwarded:
+            asyncio.create_task(_learn(text, answer, memory.SHARED))
+        return answer
     users.set_current(person)
     tools_module.set_readonly(True)
     memory.set_block(await asyncio.to_thread(memory.relevant_block, text, person))

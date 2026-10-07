@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import pathlib
+import re
 from collections.abc import Awaitable, Callable
 
 import requests
@@ -25,6 +26,20 @@ _MAX_TEXT = 4000  # Telegram's limit is 4096
 def allowed() -> dict[str, str]:
     pairs = (p.split(":", 1) for p in os.environ.get("TELEGRAM_ALLOWED_USERS", "").split(",") if ":" in p)
     return {uid.strip(): person.strip() for uid, person in pairs}
+
+
+def family_chats() -> list[str]:
+    """Group chats where the allowlisted people may also CONTROL the home (ADR-0077)."""
+    return [c.strip() for c in os.environ.get("TELEGRAM_FAMILY_CHATS", "").split(",") if c.strip()]
+
+
+_me: dict = {}
+
+
+def _bot_username() -> str:
+    if "username" not in _me:
+        _me["username"] = _api("getMe").get("result", {}).get("username", "")
+    return _me["username"]
 
 
 def _offset() -> int:
@@ -50,8 +65,8 @@ def _updates(offset: int) -> list[dict]:
     return _api("getUpdates", offset=offset, timeout=_POLL_TIMEOUT, allowed_updates=["message"]).get("result", [])
 
 
-async def loop(handle: Callable[[str, str, bool], Awaitable[str]]) -> None:
-    """handle(text, person, forwarded) -> answer; run in its own task per message so its
+async def loop(handle: Callable[..., Awaitable[str]]) -> None:
+    """handle(text, person, forwarded, group_chat_id) -> answer; run in its own task per message so its
     contextvars (current user, read-only flag) never leak into the next one."""
     if not telegram_client.available() or not allowed():
         print("telegram bot: off (no token or TELEGRAM_ALLOWED_USERS)", flush=True)
@@ -77,21 +92,26 @@ async def loop(handle: Callable[[str, str, bool], Awaitable[str]]) -> None:
             msg = u.get("message") or {}
             text, chat, sender = msg.get("text"), msg.get("chat") or {}, msg.get("from") or {}
             person = allowed().get(str(sender.get("id")))
-            if not person or chat.get("type") != "private":
+            in_family = chat.get("type") in ("group", "supergroup") and str(chat.get("id")) in family_chats()
+            if not person or not (chat.get("type") == "private" or in_family):
                 print(f"telegram: ignored message from {sender.get('id')} {sender.get('first_name', '')!r} in "
                       f"{chat.get('type')} chat {chat.get('id')} {chat.get('title', '')!r}", flush=True)  # ids for the allowlist
                 continue
             if not text:
                 await asyncio.to_thread(telegram_client.send_message, chat["id"], "Поки що розумію лише текст.")
                 continue
+            if in_family:  # privacy mode delivers only mentions/replies; drop the "@bot" itself
+                bot = await asyncio.to_thread(_bot_username)
+                text = re.sub(rf"@{re.escape(bot)}\b", "", text, flags=re.IGNORECASE).strip() if bot else text
             try:
                 await asyncio.to_thread(_api, "sendChatAction", chat_id=chat["id"], action="typing")
                 forwarded = bool(msg.get("forward_origin") or msg.get("forward_from") or msg.get("forward_date"))
-                answer = await asyncio.create_task(handle(text, person, forwarded))
+                answer = await asyncio.create_task(handle(text, person, forwarded, str(chat["id"]) if in_family else None))
             except Exception as e:
                 print(f"telegram handle error: {type(e).__name__}: {e}", flush=True)
                 answer = "Не вдалося відповісти — спробуй ще раз."
             try:
-                await asyncio.to_thread(telegram_client.send_message, chat["id"], (answer or "…")[:_MAX_TEXT])
+                await asyncio.to_thread(telegram_client.send_message, chat["id"], (answer or "…")[:_MAX_TEXT],
+                                        msg.get("message_id") if in_family else None)
             except Exception as e:
                 print(f"telegram send error: {type(e).__name__}", flush=True)
