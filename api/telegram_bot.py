@@ -141,6 +141,9 @@ async def loop(handle: Callable[..., Awaitable[str]]) -> None:
             except Exception as e:
                 print(f"telegram handle error: {type(e).__name__}: {e}", flush=True)
                 answer = "Не вдалося відповісти — спробуй ще раз."
+            where = "group" if in_family else "private"
+            print(f"TG {where} {person} Q: {' '.join(text.split())[:300]}", flush=True)  # journald, rotated (ADR-0082)
+            print(f"TG {where} {person} A: {' '.join((answer or '').split())[:300]}", flush=True)
             try:
                 await asyncio.to_thread(telegram_client.send_message, chat["id"], (answer or "…")[:_MAX_TEXT],
                                         msg.get("message_id") if in_family else None)

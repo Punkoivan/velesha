@@ -519,11 +519,17 @@ async def chat_completions(req: ChatCompletionRequest, authorization: str | None
         return JSONResponse({"error": {"message": "Unknown API key", "type": "invalid_request_error"}}, status_code=401)
     caller = _identify(caller, req)
     users.set_current(caller)
-    if os.environ.get("LOG_CALLER_PROMPT"):  # diagnostic: does HA mark voice vs typed input?
-        with open("/tmp/velesha-caller.log", "a") as f:
+    if os.environ.get("LOG_CALLER_PROMPT"):  # who asked what — device marker + the request, not HA's whole prompt
+        log = pathlib.Path("/tmp/velesha-caller.log")
+        if log.exists() and log.stat().st_size > 1_000_000:  # ~1 MB, one old copy kept (ADR-0082)
+            log.replace(log.with_suffix(".log.1"))
+        system = " ".join(m.content or "" for m in req.messages if m.role == "system")
+        marker = _DEVICE_MARK_RE.search(system)
+        with log.open("a") as f:
             f.write(json.dumps({
-                "t": time.strftime("%H:%M:%S"),
-                "system": [m.content for m in req.messages if m.role == "system"],
+                "t": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "device": marker.group(1) if marker else None,
+                "system_head": system[:120],
                 "last_user": next((m.content for m in reversed(req.messages) if m.role == "user"), None),
                 "n_messages": len(req.messages),
             }, ensure_ascii=False) + "\n")
