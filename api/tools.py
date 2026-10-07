@@ -2030,11 +2030,28 @@ def tool_library_to_watch(args: dict) -> str:
                                           for g in (i.get("Genres") or []))]
     if not picked:
         return f"Непереглянутого в жанрі «{genre}» немає."
-    picked.sort(key=lambda i: -(i.get("CommunityRating") or 0))
-    lines = [f"{i['Name']} ({i.get('ProductionYear') or '?'}, {'серіал' if i.get('Type') == 'Series' else 'фільм'}"
-             + (f", ★{i['CommunityRating']:.1f}" if i.get("CommunityRating") else "") + ")" for i in picked[:15]]
-    more = f" …і ще {len(picked) - 15}." if len(picked) > 15 else ""
-    return f"Непереглянуте, {genre} ({len(picked)}):\n" + "\n".join(lines) + more
+
+    def is_main(i):  # TMDB lists several genres; the first one is the closest thing to "what it is"
+        first = ((i.get("Genres") or [""])[0]).lower()
+        return genre.startswith("без") or _word_score(genre, first) > 0.75 or genre in first
+
+    def line(i):
+        g = [x.lower() for x in (i.get("Genres") or [])]
+        what = "мультфільм" if "мультфільм" in g and "мульт" not in genre else ("серіал" if i.get("Type") == "Series" else "фільм")
+        rest = [x for x in g if not (_word_score(genre, x) > 0.75 or genre in x) and not (what == "мультфільм" and x == "мультфільм")]
+        return (f"{i['Name']} ({i.get('ProductionYear') or '?'}, {what}"
+                + (f", ★{i['CommunityRating']:.1f}" if i.get("CommunityRating") else "")
+                + (f"; ще: {', '.join(rest)}" if rest else "") + ")")
+
+    by_rating = lambda i: -(i.get("CommunityRating") or 0)
+    main = sorted([i for i in picked if is_main(i)], key=by_rating)
+    side = sorted([i for i in picked if not is_main(i)], key=by_rating)
+    out = [f"Непереглянуте, {genre}: {len(main)} основним жанром" + (f", ще {len(side)} з елементами жанру" if side else "") + "."]
+    if main:
+        out += [f"Основний жанр — {genre}:"] + [line(i) for i in main[:12]]
+    if side:
+        out += [f"З елементами жанру ({genre} не головне):"] + [line(i) for i in side[:8]]
+    return "\n".join(out)
 
 
 _TELEGRAM_SEND_RE = re.compile(r"(телеграм|телеґрам|telegram|в групу|у групу|в особист|у особист|скинь|перешли|надішли|відправ)", re.IGNORECASE)
