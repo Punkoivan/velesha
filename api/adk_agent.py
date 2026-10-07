@@ -29,6 +29,7 @@ from mcp import StdioServerParameters
 
 import guardrails
 import memory
+import watch_history
 import jellyfin_client
 import tools as legacy
 import users
@@ -105,6 +106,46 @@ MARK_ACTIONS = {"mark_played", "mark_unplayed", "get_user_data"}
 JELLYFIN_PLAY_ALLOW = [d.strip().lower() for d in os.environ.get("JELLYFIN_PLAY_ALLOW", "kodi").split(",") if d.strip()]
 _MARK_RE = re.compile(r"(познач|відміт|проставл|проставт|проставити|галочк|зніми\s+(позначк|мітк|галочк))", re.IGNORECASE)
 _UNMARK_RE = re.compile(r"(зніми|скасуй|прибери|не\s+(переглянут|дивив|бачив))", re.IGNORECASE)
+
+
+# "Що у нас є подивитись?" must not list what the household already saw (ADR-0078): Jellyfin's own
+# played flag (lost when a file is deleted and re-downloaded) plus our watch history.
+_ASKS_WATCHED_RE = re.compile(r"(переглянут|дивил|бачил|подивил)", re.IGNORECASE)
+_UNWATCHED_TOOLS = {"jellyfin_browse", "jellyfin_recommendations"}
+_watched_cache: dict = {"at": 0.0, "keys": set()}
+
+
+def _watched_keys() -> set[str]:
+    if time.time() - _watched_cache["at"] > 600:
+        keys = set()
+        try:
+            c = watch_history._conn()
+            for title, raw in c.execute("SELECT title, raw FROM watched"):
+                for name in (title, raw):  # original title, and the name it had in Jellyfin
+                    if name:
+                        keys.add(watch_history._norm(name))
+            c.close()
+        except Exception as e:
+            print(f"watched keys error: {e}", flush=True)
+        _watched_cache.update(at=time.time(), keys=keys)
+    return _watched_cache["keys"]
+
+
+def _drop_watched(tool_response: dict) -> dict | None:
+    """MCP result without played / already-watched items; None when there's nothing to change."""
+    sc = tool_response.get("structuredContent") if isinstance(tool_response, dict) else None
+    items = (sc or {}).get("items")
+    if not isinstance(items, list):
+        return None
+    seen = _watched_keys()
+    keep = [it for it in items if not it.get("played") and watch_history._norm(it.get("name") or "") not in seen]
+    hidden = len(items) - len(keep)
+    if not hidden:
+        return None
+    text = json.dumps(keep, ensure_ascii=False, indent=2)
+    note = f"Приховано {hidden} уже переглянутих (позначка Jellyfin або наша історія переглядів)."
+    return {"content": [{"type": "text", "text": f"Непереглянуте: {len(keep)}.\n{note}\n\n{text}"}],
+            "structuredContent": {**sc, "items": keep, "shown": len(keep), "hidden_watched": hidden}}
 
 
 _NOW_RE = re.compile(r'"name": "([^"]+)",\s*"runtime_minutes": (\d+),.*?"is_paused": (true|false),\s*"position_seconds": (\d+)', re.S)
@@ -244,6 +285,9 @@ class Engine:
         if key in state["seen"]:  # same call twice = a loop; stop spending
             return {"result": "Цей самий виклик уже виконано з тим самим результатом. Дай користувачу відповідь."}
         state["seen"].add(key)
+        if tool.name == "jellyfin_browse" and "is_played" not in args \
+                and not _ASKS_WATCHED_RE.search(_text(tool_context.user_content)):
+            args["is_played"] = False  # what's there to watch = what we haven't watched (ADR-0078)
         if tool.name in JF_WRITE and legacy.readonly():
             return {"result": "НЕ ЗМІНЕНО. Цей канал лише для читання."}
         if tool.name in JF_WRITE:
@@ -271,6 +315,11 @@ class Engine:
         return None
 
     def _after_tool(self, tool, args, tool_context, tool_response):
+        if tool.name in _UNWATCHED_TOOLS and not _ASKS_WATCHED_RE.search(_text(tool_context.user_content)):
+            filtered = _drop_watched(tool_response)
+            if filtered is not None:
+                print(f"RESULT {tool.name} {filtered['structuredContent']['hidden_watched']} watched hidden", flush=True)
+                return filtered
         result = tool_response.get("result", "") if isinstance(tool_response, dict) else ""
         if isinstance(result, str) and result:
             print(f"RESULT {tool.name} {' '.join(result.split())[:200]}", flush=True)  # audit: what the tool said (ADR-0073)
