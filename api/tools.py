@@ -884,7 +884,7 @@ def tools_for(user_text: str) -> list[dict]:
     # Read-only and cheap, so always offered: a word gate looked only at the
     # latest message and lost the request in multi-turn talk (ADR-0029).
     tools = tools + [_toloka_search_schema(), _get_reminders_schema(), _memory_search_schema(), _recipe_cook_schema(),
-                     _movie_recommend_schema()]
+                     _movie_recommend_schema(), _library_to_watch_schema()]
     # recipe_add writes, but only behind its own
     # draft+confirm+title-match gate (never on the first call) — so, same
     # reasoning as ADR-0029, always offered rather than word-gated. A regex
@@ -1991,6 +1991,52 @@ def tool_movie_recommend(args: dict) -> str:
                      for i, r in enumerate(rows, 1))
 
 
+def _library_to_watch_schema() -> dict:
+    return {"type": "function", "function": {
+        "name": "library_to_watch",
+        "description": ("Що є в бібліотеці Jellyfin з НЕпереглянутого (без того, що дім уже бачив). Без genre — зведення "
+                        "за жанрами з кількістю: назви жанри і спитай, який хочеться, не перелічуй усе. З genre — список "
+                        "цього жанру, найкраще оцінені першими. Для «що у нас є подивитись» — цей інструмент, не jellyfin_browse."),
+        "parameters": {"type": "object", "properties": {
+            "genre": {"type": "string", "description": "жанр українською (комедія, трилер...); «без жанру» — нерозпізнане; порожньо — зведення"},
+            "kind": {"type": "string", "enum": ["movie", "series", "any"], "description": "фільми, серіали чи все (за замовчуванням)"}}}}}
+
+
+def tool_library_to_watch(args: dict) -> str:
+    kind = args.get("kind") or "any"
+    types = {"movie": "Movie", "series": "Series"}.get(kind, "Movie,Series")
+    try:
+        c = watch_history._conn()
+        seen = {watch_history._norm(n) for row in c.execute("SELECT title, raw FROM watched") for n in row if n}
+        c.close()
+    except Exception:
+        seen = set()
+    items = [i for i in jellyfin_client.unplayed(types)
+             if watch_history._norm(i.get("Name") or "") not in seen
+             and not re.search(r"(?i)\bs\d{1,2}e\d{1,3}\b|\b\d{1,2}x\d{2,3}\b", i.get("Name") or "")]  # episode files filed as movies
+    genre = (args.get("genre") or "").strip().lower()
+    if not genre:
+        counts: dict[str, int] = {}
+        for i in items:
+            for g in {x.lower() for x in (i.get("Genres") or [])} or {"без жанру"}:
+                counts[g] = counts.get(g, 0) + 1
+        top = sorted(counts.items(), key=lambda kv: (kv[0] == "без жанру", -kv[1]))
+        return (f"Непереглянутого: {len(items)}. За жанрами (одна позиція може мати кілька жанрів): "
+                + "; ".join(f"{g} — {n}" for g, n in top) + ".")
+    if genre.startswith("без"):
+        picked = [i for i in items if not i.get("Genres")]
+    else:
+        picked = [i for i in items if any(_word_score(genre, g.lower()) > 0.75 or genre in g.lower()
+                                          for g in (i.get("Genres") or []))]
+    if not picked:
+        return f"Непереглянутого в жанрі «{genre}» немає."
+    picked.sort(key=lambda i: -(i.get("CommunityRating") or 0))
+    lines = [f"{i['Name']} ({i.get('ProductionYear') or '?'}, {'серіал' if i.get('Type') == 'Series' else 'фільм'}"
+             + (f", ★{i['CommunityRating']:.1f}" if i.get("CommunityRating") else "") + ")" for i in picked[:15]]
+    more = f" …і ще {len(picked) - 15}." if len(picked) > 15 else ""
+    return f"Непереглянуте, {genre} ({len(picked)}):\n" + "\n".join(lines) + more
+
+
 _TELEGRAM_SEND_RE = re.compile(r"(телеграм|телеґрам|telegram|в групу|у групу|в особист|у особист|скинь|перешли|надішли|відправ)", re.IGNORECASE)
 
 
@@ -2839,6 +2885,7 @@ DISPATCH = {
     "vacuum_control": tool_vacuum_control,
     "vacuum_schedule": tool_vacuum_schedule,
     "movie_recommend": tool_movie_recommend,
+    "library_to_watch": tool_library_to_watch,
     "telegram_send": tool_telegram_send,
     "memory_add": tool_memory_add,
     "memory_search": tool_memory_search,

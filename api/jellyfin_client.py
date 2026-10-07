@@ -92,3 +92,12 @@ def get_item(item_id: str) -> dict:
 def set_played(item_id: str, played: bool) -> None:
     r = _session.request("POST" if played else "DELETE", f"{URL}/Users/{USER_ID}/PlayedItems/{item_id}", timeout=15)
     r.raise_for_status()
+
+
+def unplayed(types: str = "Movie,Series") -> list[dict]:
+    """Unplayed movies/series with genres, year and community rating (ADR-0078)."""
+    r = _session.get(f"{URL}/Users/{USER_ID}/Items", timeout=30, params={
+        "Recursive": "true", "IncludeItemTypes": types, "Filters": "IsUnplayed",
+        "Fields": "Genres,ProductionYear,CommunityRating"})
+    r.raise_for_status()
+    return r.json().get("Items") or []
