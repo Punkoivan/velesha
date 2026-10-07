@@ -105,7 +105,15 @@ def _ws_command(msg: dict) -> dict:
             await ws.send(json.dumps({"id": 1, **msg}))
             return json.loads(await ws.recv())
 
-    return asyncio.run(_call())
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_call())
+    # Called from inside the event loop (e.g. the ADK agent building its prompt): asyncio.run() is
+    # forbidden there, so run the call on a thread with a loop of its own (ADR-0083).
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, _call()).result(timeout=30)
 
 
 def delete_calendar_event(entity_id: str, uid: str) -> bool:

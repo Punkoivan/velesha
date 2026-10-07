@@ -1101,9 +1101,15 @@ def tool_toloka_search(args: dict) -> str:
     query = args.get("query", "").strip()
     if not query:
         return "Не вказано, що шукати."
-    rows = sorted(toloka_client.search(query), key=lambda r: -r["seeders"])[:8]
+    rows = toloka_client.search(query)
     if not rows:
         return f"На Толоці нічого не знайдено за «{query}»."
+    return _toloka_list(query, rows)
+
+
+def _toloka_list(query: str, rows: list[dict]) -> str:
+    """The numbered list toloka_add picks from (kept in _last_search)."""
+    rows = sorted(rows, key=lambda r: -r["seeders"])[:8]
     _last_search.update(at=time.time(), rows=rows)
     free, available = _available_space()
     lines = [
@@ -1157,14 +1163,19 @@ def tool_film_find(args: dict) -> str:
     what = "серіал" if info["kind"] == "series" else "фільм"
     head = f"Це «{info['uk_title']}»" + (f" ({info['title']}, {info['year']}, {what})." if info["title"] != info["uk_title"]
                                           else f" ({info['year']}, {what}).")
+    # Only releases that carry this film's own title count — a short original title ("The Fix") otherwise
+    # brings up unrelated films ("The Holiday Fix Up") and reads as "found" (ADR-0083).
+    names = {tmdb._norm(n) for n in (info["uk_title"], info["title"]) if n}
     tried = []
-    for query in dict.fromkeys(x for x in (info["uk_title"], info["title"],
-                                             f"{info['title']} {info['year'] or ''}".strip()) if x):
+    for query in dict.fromkeys(x for x in (info["uk_title"], info["title"]) if x):
         tried.append(query)
-        result = tool_toloka_search({"query": query})
-        if not result.startswith("На Толоці нічого"):
-            return head + "\n" + result
-    return head + f" На Толоці не знайшов (шукав: {'; '.join(tried)})."
+        rows = [r for r in toloka_client.search(query)
+                if any(re.search(rf"(^|\W){re.escape(n)}(\W|$)", tmdb._norm(r["title"])) for n in names)
+                and (not info["year"] or str(info["year"]) in r["title"] or str(info["year"] - 1) in r["title"]
+                     or str(info["year"] + 1) in r["title"] or not re.search(r"\(\d{4}", r["title"]))]
+        if rows:
+            return head + "\n" + _toloka_list(query, rows)
+    return head + f" На Толоці його ще немає (шукав: {'; '.join(tried)})."
 
 
 def tool_toloka_add(args: dict, user_text: str) -> str:
