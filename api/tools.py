@@ -365,8 +365,27 @@ def _fmt_since(iso: str | None) -> str:
     return ts.strftime("%H:%M") if ts.date() == now.date() else ts.strftime("%d.%m %H:%M")
 
 
+_ALIAS_TTL = 300
+_entity_alias_cache: tuple[float, dict[str, list[str]]] = (0.0, {})
+
+
+def _aliases() -> dict[str, list[str]]:
+    """HA aliases per entity (device-wide) for every entity, cached for a few minutes —
+    one websocket round trip. Empty on error: names alone still work."""
+    global _entity_alias_cache
+    if time.time() - _entity_alias_cache[0] > _ALIAS_TTL:
+        try:
+            ids = [st["entity_id"] for st in ha_client.get_states()]
+            _entity_alias_cache = (time.time(), ha_client.device_aliases(ids))
+        except Exception as e:
+            print(f"entity aliases error: {e}", flush=True)
+            return _entity_alias_cache[1]
+    return _entity_alias_cache[1]
+
+
 def resolve_entities(hint: str, unit: str | None = None, limit: int = 1) -> list[dict]:
     states = ha_client.get_states()
+    aliases = _aliases()
     candidates = []
     for s in states:
         name = s.get("attributes", {}).get("friendly_name")
@@ -380,7 +399,8 @@ def resolve_entities(hint: str, unit: str | None = None, limit: int = 1) -> list
         if unit and s.get("attributes", {}).get("unit_of_measurement") != unit:
             continue
         domain_priority = _DOMAIN_PRIORITY.get(entity_id.split(".", 1)[0], 1)
-        candidates.append((_score(hint, name), domain_priority, s))
+        score = max([_score(hint, name)] + [_score(hint, a) for a in aliases.get(entity_id, [])])
+        candidates.append((score, domain_priority, s))
     candidates.sort(key=lambda c: (-c[0], c[1]))
     if not candidates or candidates[0][0] <= 0.3:
         return []
@@ -438,7 +458,9 @@ def tool_get_live_state(args: dict) -> str:
         unit = attrs.get("unit_of_measurement", "")
         state = _state_uk(e)
         since = _fmt_since(e.get("last_changed"))
-        lines.append(f"{attrs.get('friendly_name')}: {state} {unit}".rstrip() + f" (змінилось {since})")
+        aka = sorted(set(_aliases().get(e["entity_id"], [])))
+        name = attrs.get("friendly_name") + (f" ({', '.join(aka)})" if aka else "")
+        lines.append(f"{name}: {state} {unit}".rstrip() + f" (змінилось {since})")
     if len(lines) > 1:
         lines.append("Якщо показання різняться — вірне те, що змінилось пізніше (перший рядок).")
     return "\n".join(lines)
@@ -957,8 +979,41 @@ def tools_for(user_text: str) -> list[dict]:
         name = tool["function"]["name"]
         if name not in seen:
             seen.add(name)
-            deduped.append(tool)
+            deduped.append(_ha_switch_schema(tool) if name == "ha_switch" else tool)
     return deduped
+
+
+_ALLOWED_TTL = 60
+_allowed_cache: tuple[float, str] = (0.0, "")
+
+
+def _allowed_devices_text() -> str:
+    """"нідзя (шайтанка, шайтан-машина) — розетка; …" for the ha_switch description, cached a minute."""
+    global _allowed_cache
+    if time.time() - _allowed_cache[0] > _ALLOWED_TTL:
+        try:
+            aliases = _aliases()
+            kinds = {"switch": "розетка", "light": "лампа"}
+            parts = []
+            for eid, name in _control_allowed().items():
+                aka = sorted(set(aliases.get(eid, [])))
+                parts.append(name + (f" ({', '.join(aka)})" if aka else "") + f" — {kinds.get(eid.split('.')[0], 'пристрій')}")
+            _allowed_cache = (time.time(), "; ".join(parts))
+        except Exception as e:
+            print(f"allowed devices error: {e}", flush=True)
+    return _allowed_cache[1]
+
+
+def _ha_switch_schema(tool: dict) -> dict:
+    """ha_switch with the allowed devices spelled out: without them the model took
+    "включи посудомийку" for starting a wash program and refused without trying (ADR-0087)."""
+    devices = _allowed_devices_text()
+    if not devices:
+        return tool
+    fn = dict(tool["function"])
+    fn["description"] += (f" Дозволені пристрої: {devices}. Розетка вмикає/вимикає живлення приладу — "
+                          "«включи посудомийку/шайтанку» означає ввімкнути її розетку.")
+    return {**tool, "function": fn}
 
 
 # The only device this tool may ever start playback on — a state-changing
@@ -2228,7 +2283,7 @@ def tool_memory_forget(args: dict) -> str:
 # Only devices named here can be switched by the agent: the same HA has the
 # fridge, oven and kettle as switches too (ADR-0039). Extend via HA_CONTROL_ALLOW.
 def _control_allowed() -> dict[str, str]:
-    ids = [e.strip() for e in os.environ.get("HA_CONTROL_ALLOW", "switch.tv,light.2,light.1_2").split(",") if e.strip()]
+    ids = [e.strip() for e in os.environ.get("HA_CONTROL_ALLOW", "switch.tv").split(",") if e.strip()]
     names = {}
     for st in ha_client.get_states():
         if st["entity_id"] in ids:
@@ -2241,7 +2296,7 @@ _DOMAIN_SYNONYMS = {"light": ["світло", "лампа", "лампочка"],
 
 
 def _match_allowed(hint: str, allowed: dict[str, str]) -> list[str]:
-    """Every meaningful word of the phrase must match the device (name or domain synonym,
+    """Every meaningful word of the phrase must match the device (name, HA alias or domain synonym,
     inflection-tolerant) — a lone generic word like "світло" must not match every lamp.
     Several lamps sharing a room word (e.g. two "зала" lamps) all match: "світло в залі"
     means the room's light, not one specific bulb."""
@@ -2251,6 +2306,8 @@ def _match_allowed(hint: str, allowed: dict[str, str]) -> list[str]:
     matches = []
     for eid, name in allowed.items():
         words = name.lower().replace("_", " ").split() + _DOMAIN_SYNONYMS.get(eid.split(".")[0], [])
+        # HA aliases count too: "шайтанка" for the plug named "нідзя"
+        words += [w for a in _aliases().get(eid, []) for w in a.lower().split()]
         def hit(qt: str) -> bool:
             return any(w.startswith(qt[:4]) or qt.startswith(w[:4]) or difflib.SequenceMatcher(None, qt, w).ratio() > 0.72
                        for w in words)

@@ -138,6 +138,18 @@ def entity_aliases(entity_id: str) -> list[str]:
     return [a for a in (r.get("aliases") or []) if a]
 
 
+def device_aliases(entity_ids: list[str]) -> dict[str, list[str]]:
+    """entity_id → aliases given to it or to any entity of the same device, so
+    "шайтанка" (an alias on the plug's switch) also finds that plug's power sensor."""
+    r = _ws_command({"type": "config/entity_registry/get_entries", "entity_ids": entity_ids}).get("result") or {}
+    by_device: dict[str, list[str]] = {}
+    for e in r.values():
+        if e and e.get("device_id"):
+            by_device.setdefault(e["device_id"], []).extend(a for a in e.get("aliases") or [] if a)
+    return {eid: [a for a in (e.get("aliases") or []) if a] + (by_device.get(e.get("device_id"), []) if e.get("device_id") else [])
+            for eid, e in r.items() if e}
+
+
 def area_registry() -> list[dict]:
     """Not exposed over plain REST (/api/config/area_registry -> 404) — same
     websocket the frontend's own area settings page uses."""
