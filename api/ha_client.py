@@ -80,6 +80,15 @@ def notify(service: str, title: str, message: str) -> None:
     _request("POST", f"{HA_URL}/api/services/notify/{service}", json={"title": title, "message": message}, timeout=15)
 
 
+def speak(service: str, text: str) -> None:
+    """Say text aloud on an Android companion-app phone (its TTS engine), on the
+    alarm stream so it's heard even with the media volume down. High priority + ttl 0
+    so Android's Doze doesn't hold it back (s21 got plain pushes minutes late)."""
+    _request("POST", f"{HA_URL}/api/services/notify/{service}",
+             json={"message": "TTS", "data": {"tts_text": text, "media_stream": "alarm_stream",
+                                              "priority": "high", "ttl": 0}}, timeout=15)
+
+
 def calendar_events(entity_id: str, start_iso: str, end_iso: str) -> list[dict]:
     return _request("GET", f"{HA_URL}/api/calendars/{entity_id}",
                      params={"start": start_iso, "end": end_iso}, timeout=15).json()

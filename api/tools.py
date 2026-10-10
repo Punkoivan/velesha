@@ -264,7 +264,8 @@ TOOLS = [
         "function": {
             "name": "remind_me",
             "description": (
-                "Поставити разове нагадування — надішле пуш-сповіщення на телефон у вказаний час. "
+                "Поставити разове нагадування — надішле пуш-сповіщення на телефон у вказаний час "
+                "(з голосового пристрою — ще й скаже вголос на ньому). "
                 "Вкажи time (година, напр. '19' чи '19:30') і, якщо треба, date ('сьогодні'/'завтра'/YYYY-MM-DD, "
                 "за замовчуванням сьогодні, а якщо цей час уже минув — завтра); або in_minutes замість time/date "
                 "для 'через N хвилин'. Лише за прямим проханням нагадати."
@@ -687,8 +688,11 @@ _ADD_VERB_RE = re.compile(
 # Verb stems ending in [вл] cover він/вона/вони ("з'їв", "з'їла", "з'їли") —
 # the first version listed only singular forms, so "ми їх з'їли" never got
 # grocy_consume offered. ['’ʼ]? — speech-to-text emits any apostrophe or none.
+# "забрали пергамент", "так, забирай один" — taking something out of the
+# pantry is how people actually say it; none of the stems above matched (ADR-0086).
 _GROCY_CONSUME_RE = re.compile(
-    r"(використа[вл]|витрати[вл]|списа[вл]|спиши|з['’ʼ]?ї[вл]|випи[вл]|закінчи[вл]|нульов|обнул)", re.IGNORECASE)
+    r"(використа[вл]|витрати[вл]|списа[вл]|спиши|з['’ʼ]?ї[вл]|випи[вл]|закінчи[вл]|нульов|обнул|"
+    r"забра[вл]|забер|забира|взя[вл]|візьми|мінус)", re.IGNORECASE)
 _GROCY_ADD_RE = re.compile(r"(купи[вл]|покла[вл]|поповни|прибав|дода)", re.IGNORECASE)
 # Actual remaining amount, not a delta: "лишилось 12 кг", "закінчився папір" (= 0) — ADR-0068.
 _GROCY_SET_RE = re.compile(r"(лиши[вл]|залиши[вл]|залишок|залишку|закінчи[вл]|нема[є]? більше|більше нема|вже нема|"
@@ -864,7 +868,7 @@ _GROCY_RECIPE_SCHEMAS = {
 
 
 _GROCY_SCHEMAS = {
-    "grocy_consume": ("Списати зі запасів використане/витрачене (Grocy). Лише коли користувач каже, що використав/витратив/з'їв.", _GROCY_CONSUME_RE),
+    "grocy_consume": ("Списати зі запасів використане/витрачене (Grocy). Лише коли користувач каже, що використав/витратив/з'їв/забрав/взяв.", _GROCY_CONSUME_RE),
     "grocy_add_stock": ("Додати до запасів куплене/поповнене (Grocy). Лише коли користувач каже, що купив/докупив/поклав.", _GROCY_ADD_RE),
     "grocy_shopping_add": ("Додати продукт до списку покупок Grocy (запас не змінює). Лише коли користувач просить додати в список покупок / що треба купити.", _GROCY_SHOP_RE),
 }
@@ -2816,8 +2820,12 @@ def tool_remind_me(args: dict) -> str:
     when, err = _resolve_when(args, now)
     if err:
         return "НЕ ЗМІНЕНО. " + err
+    extra = {}
+    if speaker := _reminder_speaker(users.device()):
+        extra["description"] = _SPEAK_PREFIX + speaker  # said aloud on the device it was asked from (ADR-0085)
     ha_client.call_service_data("calendar", "create_event", calendar, summary=text,
-        start_date_time=when.strftime("%Y-%m-%d %H:%M:%S"), end_date_time=(when + datetime.timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"))
+        start_date_time=when.strftime("%Y-%m-%d %H:%M:%S"), end_date_time=(when + datetime.timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:%S"),
+        **extra)
     if not _reminder_confirmed(calendar, text, when):
         return "НЕ ЗМІНЕНО. Команду надіслано, але нагадування не підтвердилось у календарі."
     note = ""
@@ -2884,6 +2892,17 @@ def _reminder_notify_target(user: str) -> str | None:
     return v.removeprefix("notify.") if v else None
 
 
+_SPEAK_PREFIX = "SPEAK:"
+
+
+def _reminder_speaker(device: str) -> str | None:
+    """Bare notify service of a voice device (REMINDER_SPEAK_S21_VOICE=mobile_app_s21_voic4)."""
+    if not device:
+        return None
+    v = os.environ.get("REMINDER_SPEAK_" + re.sub(r"[^A-Z0-9]", "_", device.upper()))
+    return v.removeprefix("notify.") if v else None
+
+
 def _telegram_chat_id(user: str) -> str | None:
     return os.environ.get(f"TELEGRAM_CHAT_ID_{user.upper()}")
 
@@ -2928,6 +2947,11 @@ async def poll_reminders_once() -> None:
                 except Exception as ex:
                     print(f"vacuum schedule error ({calendar}/{uid}): {ex}", flush=True)
                 continue
+            if description.startswith(_SPEAK_PREFIX):
+                try:
+                    ha_client.speak(description[len(_SPEAK_PREFIX):], f"Нагадую: {e['summary']}")
+                except Exception as ex:
+                    print(f"reminder speak error ({calendar}/{uid}): {ex}", flush=True)
             if target := _reminder_notify_target(user):
                 try:
                     ha_client.notify(target, "Нагадування", e["summary"])

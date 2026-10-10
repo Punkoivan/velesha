@@ -56,6 +56,10 @@ def set_device(device: str) -> None:
     _device.set(device)
 
 
+def device() -> str:
+    return _device.get()
+
+
 def _admin_devices() -> set[str]:
     return {d.strip().lower() for d in os.environ.get("VELESHA_ADMIN_DEVICES", "").split(",") if d.strip()}
 
