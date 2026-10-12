@@ -731,9 +731,10 @@ _GROCY_SET_RE = re.compile(r"(лиши[вл]|залиши[вл]|залишок|�
 _GROCY_NEW_PRODUCT_RE = re.compile(
     r"(дода|занес|завед|створ).*(товар|перелік|(grocy|гроч|грок))|"
     r"(товар|перелік|(grocy|гроч|грок)).*(дода|занес|завед|створ)", re.IGNORECASE)
-# Moving between storage places (ADR-0088): «переклав кабелі в чорну сумку», «мосфети тепер у шухлядці».
-_GROCY_MOVE_RE = re.compile(r"(перен[ео]с|перекла|переміст|тепер (лежать|лежить|зберіга|у |в ))",
-                            re.IGNORECASE)
+# Moving between storage places (ADR-0088): «переклав кабелі в чорну сумку», «мосфети тепер у шухлядці»,
+# and a correction with no verb at all: «не кухня, це шухляда для електроніки» — so a storage-place word opens it too.
+_GROCY_MOVE_RE = re.compile(r"(перен[ео]с|перекла|переміст|тепер (лежать|лежить|зберіга|у |в )|"
+                            r"місц[еяі]|сум[кц]|шухляд|кладов|кухн|холодильн)", re.IGNORECASE)
 _GROCY_SHOP_RE = re.compile(r"(список покупок|списку покупок|треба купити|потрібно купити|купити)", re.IGNORECASE)
 
 _GROCY_COOK_RE = re.compile(r"(приготува[вл]|звари[вл]|спік|спекл|засмажи[вл])", re.IGNORECASE)
@@ -941,6 +942,9 @@ def tools_for(user_text: str) -> list[dict]:
         tools = tools + [_grocy_product_add_schema()]
     if show_all or _GROCY_MOVE_RE.search(text):
         tools = tools + [_grocy_move_schema()]
+    if _fresh_missing():  # answer to "новий товар чи в покупки?" (ADR-0089)
+        tools = tools + [_grocy_product_add_schema(),
+                         _grocy_action_schema("grocy_shopping_add", _GROCY_SCHEMAS["grocy_shopping_add"][0])]
     short_reply = len(text.split()) <= 4
     if _GROCY_IMPORT_RE.search(text):
         # Keeps the 60-min "recipe conversation" window alive (_fresh_import_ctx,
@@ -1447,7 +1451,7 @@ def _fmt_amount(a: float) -> str:
     return f"{a:g}"
 
 
-def tool_grocy_stock(args: dict) -> str:
+def tool_grocy_stock(args: dict, user_text: str = "") -> str:
     units, locs = _grocy_units(), {l["id"]: l["name"] for l in grocy_client.objects("locations")}
     stock = {row["product_id"]: float(row["amount"]) for row in grocy_client.stock()}
     query = (args.get("query") or "").strip()
@@ -1460,7 +1464,17 @@ def tool_grocy_stock(args: dict) -> str:
         if not products:
             return f"У «{place['name']}» в Grocy нічого не записано."
     if query and not products:
-        return f"У запасах Grocy немає нічого схожого на «{query}»."
+        _grocy_missing[users.current()] = time.time()  # the reply may be "в запаси" / "в покупки" (ADR-0089)
+        if _GROCY_SHOP_RE.search(user_text):  # «додай до списку покупок батон» — a shopping line, not a new product
+            return (f"У запасах Grocy немає «{query}». Користувач просить додати в список покупок — одразу виклич "
+                    f"grocy_shopping_add (запишеться окремим рядком), не заводь товар і не перепитуй.")
+        if _GROCY_ADD_RE.search(user_text) or _GROCY_NEW_PRODUCT_RE.search(user_text):
+            # «додавай резистори 270 Ом…, 10 штук» is already the answer — asking again only annoys
+            return (f"У запасах Grocy ще немає «{query}». Користувач прямо просить додати — одразу заведи "
+                    f"через grocy_product_add (кількість і місце зберігання з його слів), не перепитуй.")
+        return (f"У запасах Grocy немає нічого схожого на «{query}». Якщо користувач хотів це додати чи записати, "
+                f"а з його слів незрозуміло, що саме, — спитай одним питанням: завести як новий товар у запаси "
+                f"чи додати в список покупок?")
     lines = []
     for p in products[:25]:
         amt = stock.get(p["id"])
@@ -1476,7 +1490,20 @@ def tool_grocy_shopping_list(args: dict) -> str:
     rows = grocy_client.shopping_list()
     if not rows:
         return "Список покупок порожній."
-    return "\n".join(f"{names[r['product_id']]['name']}: {_fmt_amount(float(r['amount']))} {units.get(names[r['product_id']]['qu_id_stock'], '')}" for r in rows if r.get("product_id") in names)
+    lines = [f"{names[r['product_id']]['name']}: {_fmt_amount(float(r['amount']))} {units.get(names[r['product_id']]['qu_id_stock'], '')}"
+             for r in rows if r.get("product_id") in names]
+    lines += [f"{r['note']}: {_fmt_amount(float(r['amount']))}" for r in rows if not r.get("product_id") and r.get("note")]
+    return "\n".join(lines)
+
+
+# A product the user named isn't in Grocy: ask "new product or shopping list?" and keep
+# both tools offered for the bare reply ("в запаси", "в покупки") — ADR-0089.
+_MISSING_TTL = 10 * 60
+_grocy_missing: dict[str, float] = {}
+
+
+def _fresh_missing() -> bool:
+    return time.time() - _grocy_missing.get(users.current(), 0.0) < _MISSING_TTL
 
 
 def _grocy_one(product: str):
@@ -1484,7 +1511,10 @@ def _grocy_one(product: str):
     scored = _grocy_match_scored(product)
     found = [p for _, p in scored]
     if not found:
-        return None, f"НЕ ЗМІНЕНО. У Grocy немає продукту «{product}»."
+        _grocy_missing[users.current()] = time.time()
+        return None, (f"НЕ ЗМІНЕНО. У Grocy немає продукту «{product}». Спитай користувача одним питанням: "
+                      f"завести його як новий товар у запаси (grocy_product_add; кількість і місце зберігання, якщо "
+                      f"сказані) чи додати в список покупок? Нічого не створюй, доки не відповість.")
     # one product whose whole name was said (score >= 1.4: all words both ways) beats partial matches
     full = [p for sc, p in scored if sc >= 1.4]
     if len(full) == 1:
@@ -1592,6 +1622,12 @@ def tool_grocy_add_stock(args: dict, user_text: str = "") -> str:
 
 
 def tool_grocy_shopping_add(args: dict, user_text: str = "") -> str:
+    name = (args.get("product") or "").strip()
+    amount = args.get("amount")
+    if name and isinstance(amount, (int, float)) and amount > 0 and not _grocy_match_scored(name):
+        # not a Grocy product (yet): a plain text line, after "новий товар чи в покупки?" (ADR-0089)
+        grocy_client.shopping_add_note(name, amount)
+        return f"Додано до списку покупок: {name} — {_fmt_amount(amount)} (окремим рядком, такого товару в Grocy немає)."
     return _grocy_change("shop", args, user_text)
 
 
@@ -1623,8 +1659,12 @@ def tool_grocy_product_add(args: dict) -> str:
     amount = args.get("amount")
     if not isinstance(amount, (int, float)) or amount < 0:
         return "НЕ ЗМІНЕНО. Вкажи початкову кількість (0, якщо просто завести товар без запасу)."
-    if _grocy_match(name, strict=True):
+    # Only an exact name blocks creation: fuzzy matching took «HW-133ABC» for the existing
+    # «HW-133A~F» — for part numbers a few characters make a different thing (ADR-0089).
+    norm = lambda t: " ".join(t.lower().split())
+    if any(norm(p["name"]) == norm(name) for p in grocy_client.objects("products")):
         return f"НЕ ЗМІНЕНО. Товар «{name}» уже є в Grocy — онови запас через grocy_add_stock."
+    similar = [p["name"] for p in _grocy_match(name, strict=True)][:3]
     unit_name = (args.get("unit") or "шт").strip().lower()
     units = {v.lower(): k for k, v in _grocy_units().items()}
     unit_id = units.get(unit_name) or grocy_client.create("quantity_units", {"name": unit_name, "name_plural": unit_name})
@@ -1646,7 +1686,8 @@ def tool_grocy_product_add(args: dict) -> str:
     if amount > 0:
         grocy_client.set_stock(pid, amount, loc, note="Початковий запас через Velesha")
     where = f" ({place['name']})" if place.get("name") else ""
-    return f"Створено товар «{name}» у Grocy{where}, початковий запас: {_fmt_amount(amount)} {unit_name}."
+    note = f" Схожі вже наявні (це інші товари): {', '.join(similar)}." if similar else ""
+    return f"Створено товар «{name}» у Grocy{where}, початковий запас: {_fmt_amount(amount)} {unit_name}.{note}"
 
 
 def _grocy_location(said: str) -> tuple[dict | None, str | None]:
@@ -1674,8 +1715,8 @@ def _grocy_move_schema() -> dict:
         "name": "grocy_move",
         "description": (
             "Перенести товар в інше місце зберігання Grocy (шухлядка, сумка, кладова тощо): змінює місце товару "
-            "і переносить туди весь його запас. Лише коли користувач каже, що переклав/переніс товар або що він "
-            "тепер лежить деінде."
+            "і переносить туди весь його запас. Коли користувач каже, що переклав/переніс товар, що він "
+            "тепер лежить деінде, або виправляє місце щойно заведеного товару («не кухня, а шухляда»)."
         ),
         "parameters": {
             "type": "object",
@@ -1700,7 +1741,12 @@ def tool_grocy_move(args: dict, user_text: str = "") -> str:
     for entry in grocy_client.product_locations(p["id"]):
         if entry["location_id"] != place["id"] and float(entry["amount"]) > 0:
             grocy_client.transfer(p["id"], float(entry["amount"]), entry["location_id"], place["id"])
-    grocy_client.update("products", p["id"], {"location_id": place["id"]})
+    data = {"location_id": place["id"]}
+    if place.get("description") == "Електроніка":  # created on «Кухня» by default, it got «Продукти»
+        grp = next((g["id"] for g in grocy_client.objects("product_groups") if g["name"] == "Електроніка"), None)
+        if grp:
+            data["product_group_id"] = grp
+    grocy_client.update("products", p["id"], data)
     return f"Перенесено: «{p['name']}» тепер зберігається в «{place['name']}»."
 
 
@@ -3169,7 +3215,7 @@ def call_tool(name: str, arguments_json: str, user_text: str = "") -> str:
         return "НЕ ЗМІНЕНО. Цей канал лише для читання — змінити можна голосом через Home Assistant."
     try:
         if name in ("qbittorrent_add", "toloka_add", "recipe_add", "ha_switch", "cancel_reminder", "memory_add",
-                    "grocy_consume", "grocy_add_stock", "grocy_set_stock", "grocy_shopping_add"):
+                    "grocy_consume", "grocy_add_stock", "grocy_set_stock", "grocy_shopping_add", "grocy_stock"):
             return handler(args, user_text)
         return handler(args)
     except Exception as e:

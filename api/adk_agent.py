@@ -279,6 +279,9 @@ class Engine:
             usage = getattr(llm_response, "usage_metadata", None)
             if hosted and usage and usage.total_token_count:
                 guardrails.record_usage(usage.total_token_count)
+                # where the ~8k tokens per call go: prompt vs cached prefix vs answer (token optimisation, 2026-10-12)
+                print(f"USAGE prompt={usage.prompt_token_count} cached={usage.cached_content_token_count or 0} "
+                      f"out={usage.candidates_token_count}", flush=True)
             return None
         return cb
 
@@ -370,6 +373,10 @@ class Engine:
                         verbatim.append(str(p.function_response.response.get("result", "")))
         except Exception as e:  # never surface a 500 to HA
             print(f"ADK error {type(e).__name__}: {e}", flush=True)
+            if not hosted and self._hosted_ok:
+                # budget spent and the local fallback is gone since the move to acer — say why, not "try again"
+                return ("Денний ліміт токенів вичерпано, а запасної локальної моделі немає. "
+                        "Ліміт оновиться опівночі."), state["acted"], hosted
             if "llm call" in str(e).lower() or "limit" in str(e).lower():
                 return "Забагато кроків міркування — не вдалось отримати остаточну відповідь.", state["acted"], hosted
             return "Не вдалося сформувати відповідь — спробуй ще раз.", state["acted"], hosted

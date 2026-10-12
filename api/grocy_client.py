@@ -76,6 +76,11 @@ def shopping_add(product_id: int, amount: float, list_id: int = 1) -> None:
     _req("POST", "/stock/shoppinglist/add-product", json={"product_id": product_id, "list_id": list_id, "product_amount": amount})
 
 
+def shopping_add_note(text: str, amount: float, list_id: int = 1) -> int:
+    """A free-text shopping-list line for something that isn't a Grocy product."""
+    return create("shopping_list", {"shopping_list_id": list_id, "note": text, "amount": amount})
+
+
 def shopping_list() -> list[dict]:
     return _req("GET", "/objects/shopping_list")
 
