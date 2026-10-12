@@ -36,6 +36,20 @@ def create(entity: str, data: dict) -> int:
     return int(_req("POST", f"/objects/{entity}", json=data)["created_object_id"])
 
 
+def update(entity: str, object_id: int, data: dict) -> None:
+    _req("PUT", f"/objects/{entity}/{object_id}", json=data)
+
+
+def product_locations(product_id: int) -> list[dict]:
+    """Stock of one product per location: [{"location_id", "amount", …}]."""
+    return _req("GET", f"/stock/products/{product_id}/locations") or []
+
+
+def transfer(product_id: int, amount: float, location_from: int, location_to: int) -> None:
+    _req("POST", f"/stock/products/{product_id}/transfer",
+         json={"amount": amount, "location_id_from": location_from, "location_id_to": location_to})
+
+
 def stock() -> list[dict]:
     return _req("GET", "/stock")
 

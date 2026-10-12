@@ -169,12 +169,16 @@ TOOLS = [
         "function": {
             "name": "grocy_stock",
             "description": (
-                "Що є в домашніх запасах (Grocy: їжа і господарські товари): скільки чогось, де лежить. "
-                "Без query — короткий перелік. Для 'чи є X', 'скільки Y', 'що є з круп/консервів'."
+                "Що є в домашніх запасах (Grocy: їжа, господарські товари, електроніка): скільки чогось, де лежить. "
+                "Без query — короткий перелік. Для 'чи є X', 'скільки Y', 'що є з круп/консервів'. "
+                "Для 'що лежить у чорній сумці / в шухлядці' — location замість query."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {"query": {"type": "string", "description": "Назва чи частина назви продукту, напр. 'цукор', 'круп', 'папір'"}},
+                "properties": {
+                    "query": {"type": "string", "description": "Назва чи частина назви продукту, напр. 'цукор', 'круп', 'папір'"},
+                    "location": {"type": "string", "description": "Місце зберігання, вміст якого показати, напр. 'чорна сумка'"},
+                },
             },
         },
     },
@@ -612,7 +616,7 @@ def tool_get_sensor_history(args: dict) -> str:
 # "порадь серіал на вечір" (ADR-0021). Deliberately a code gate, not a
 # model decision.
 CONTROL_TOOLS = {"qbittorrent_add", "toloka_add",
-                 "grocy_consume", "grocy_add_stock", "grocy_set_stock", "grocy_shopping_add", "grocy_product_add",
+                 "grocy_consume", "grocy_add_stock", "grocy_set_stock", "grocy_shopping_add", "grocy_product_add", "grocy_move",
                  "grocy_recipe_consume", "grocy_recipe_shopping", "recipe_add",
                  "memory_add", "memory_forget", "telegram_send", "ha_switch", "vacuum_control", "vacuum_schedule",
                  "log_watched_movie", "remind_me", "cancel_reminder"}
@@ -727,6 +731,9 @@ _GROCY_SET_RE = re.compile(r"(лиши[вл]|залиши[вл]|залишок|�
 _GROCY_NEW_PRODUCT_RE = re.compile(
     r"(дода|занес|завед|створ).*(товар|перелік|(grocy|гроч|грок))|"
     r"(товар|перелік|(grocy|гроч|грок)).*(дода|занес|завед|створ)", re.IGNORECASE)
+# Moving between storage places (ADR-0088): «переклав кабелі в чорну сумку», «мосфети тепер у шухлядці».
+_GROCY_MOVE_RE = re.compile(r"(перен[ео]с|перекла|переміст|тепер (лежать|лежить|зберіга|у |в ))",
+                            re.IGNORECASE)
 _GROCY_SHOP_RE = re.compile(r"(список покупок|списку покупок|треба купити|потрібно купити|купити)", re.IGNORECASE)
 
 _GROCY_COOK_RE = re.compile(r"(приготува[вл]|звари[вл]|спік|спекл|засмажи[вл])", re.IGNORECASE)
@@ -932,6 +939,8 @@ def tools_for(user_text: str) -> list[dict]:
         # tries it first and falls back to this when told the product
         # doesn't exist yet.
         tools = tools + [_grocy_product_add_schema()]
+    if show_all or _GROCY_MOVE_RE.search(text):
+        tools = tools + [_grocy_move_schema()]
     short_reply = len(text.split()) <= 4
     if _GROCY_IMPORT_RE.search(text):
         # Keeps the 60-min "recipe conversation" window alive (_fresh_import_ctx,
@@ -1443,6 +1452,13 @@ def tool_grocy_stock(args: dict) -> str:
     stock = {row["product_id"]: float(row["amount"]) for row in grocy_client.stock()}
     query = (args.get("query") or "").strip()
     products = _grocy_match(query) if query else grocy_client.objects("products")
+    if args.get("location"):  # «що лежить у чорній сумці» (ADR-0088)
+        place, err = _grocy_location(args["location"])
+        if err:
+            return err.removeprefix("НЕ ЗМІНЕНО. ")
+        products = [p for p in products if p.get("location_id") == place["id"]]
+        if not products:
+            return f"У «{place['name']}» в Grocy нічого не записано."
     if query and not products:
         return f"У запасах Grocy немає нічого схожого на «{query}»."
     lines = []
@@ -1593,6 +1609,7 @@ def _grocy_product_add_schema() -> dict:
                 "name": {"type": "string", "description": "Назва товару, як сказав користувач"},
                 "amount": {"type": "number", "description": "Початкова кількість у запасі (0, якщо просто завести товар)"},
                 "unit": {"type": "string", "description": "Одиниця виміру (напр. л, кг, шт); якщо не сказано — 'шт'"},
+                "location": {"type": "string", "description": "Місце зберігання, якщо сказано (напр. «фіолетова сумка», «шухлядка»)"},
             },
             "required": ["name", "amount"],
         },
@@ -1611,8 +1628,16 @@ def tool_grocy_product_add(args: dict) -> str:
     unit_name = (args.get("unit") or "шт").strip().lower()
     units = {v.lower(): k for k, v in _grocy_units().items()}
     unit_id = units.get(unit_name) or grocy_client.create("quantity_units", {"name": unit_name, "name_plural": unit_name})
-    loc = next((l["id"] for l in grocy_client.objects("locations") if l["name"] == "Кухня"), 1)
-    grp = next((g["id"] for g in grocy_client.objects("product_groups") if g["name"] == "Продукти"), None)
+    if args.get("location"):
+        place, err = _grocy_location(args["location"])
+        if err:
+            return err
+    else:
+        place = next((l for l in grocy_client.objects("locations") if l["name"] == "Кухня"), {"id": 1})
+    loc = place["id"]
+    # Electronics containers (location description "Електроніка") hold parts, not food.
+    group_name = "Електроніка" if place.get("description") == "Електроніка" else "Продукти"
+    grp = next((g["id"] for g in grocy_client.objects("product_groups") if g["name"] == group_name), None)
     data = {"name": name, "location_id": loc, "qu_id_stock": unit_id, "qu_id_purchase": unit_id,
             "qu_id_consume": unit_id, "qu_id_price": unit_id, "description": "Створено голосом через Velesha"}
     if grp:
@@ -1620,7 +1645,63 @@ def tool_grocy_product_add(args: dict) -> str:
     pid = grocy_client.create("products", data)
     if amount > 0:
         grocy_client.set_stock(pid, amount, loc, note="Початковий запас через Velesha")
-    return f"Створено товар «{name}» у Grocy, початковий запас: {_fmt_amount(amount)} {unit_name}."
+    where = f" ({place['name']})" if place.get("name") else ""
+    return f"Створено товар «{name}» у Grocy{where}, початковий запас: {_fmt_amount(amount)} {unit_name}."
+
+
+def _grocy_location(said: str) -> tuple[dict | None, str | None]:
+    """(location, None) for the one location the phrase names, else (None, refusal):
+    «у фіолетову сумку» -> «Фіолетова сумка». Every meaningful word must fit."""
+    locations = grocy_client.objects("locations")
+    tokens = [w for w in re.findall(r"\w+", said.lower()) if w not in _STOPWORDS]
+    scored = []
+    for l in locations:
+        words = re.findall(r"\w+", l["name"].lower())
+        if tokens and words:
+            scored.append((min(max(_word_score(t, w) for w in words) for t in tokens), l))
+    scored.sort(key=lambda x: -x[0])
+    good = [l for sc, l in scored if sc >= 0.75]
+    if len(good) == 1 or (len(good) > 1 and scored[0][0] - scored[1][0] >= 0.09):
+        return good[0], None
+    names = ", ".join(l["name"] for l in locations)
+    if good:
+        return None, "НЕ ЗМІНЕНО. Уточни місце: " + ", ".join(l["name"] for l in good[:5]) + "."
+    return None, f"НЕ ЗМІНЕНО. Немає місця зберігання «{said}». Є: {names}."
+
+
+def _grocy_move_schema() -> dict:
+    return {"type": "function", "function": {
+        "name": "grocy_move",
+        "description": (
+            "Перенести товар в інше місце зберігання Grocy (шухлядка, сумка, кладова тощо): змінює місце товару "
+            "і переносить туди весь його запас. Лише коли користувач каже, що переклав/переніс товар або що він "
+            "тепер лежить деінде."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product": {"type": "string", "description": "Назва товару"},
+                "location": {"type": "string", "description": "Куди, як сказав користувач (напр. «чорна сумка»)"},
+            },
+            "required": ["product", "location"],
+        },
+    }}
+
+
+def tool_grocy_move(args: dict, user_text: str = "") -> str:
+    p, err = _grocy_one(args.get("product") or "")
+    if err:
+        return err
+    place, err = _grocy_location(args.get("location") or "")
+    if err:
+        return err
+    if p.get("location_id") == place["id"]:
+        return f"НЕ ЗМІНЕНО. «{p['name']}» і так зберігається в «{place['name']}»."
+    for entry in grocy_client.product_locations(p["id"]):
+        if entry["location_id"] != place["id"] and float(entry["amount"]) > 0:
+            grocy_client.transfer(p["id"], float(entry["amount"]), entry["location_id"], place["id"])
+    grocy_client.update("products", p["id"], {"location_id": place["id"]})
+    return f"Перенесено: «{p['name']}» тепер зберігається в «{place['name']}»."
 
 
 def _grocy_recipe_match(query: str) -> list[dict]:
@@ -3066,6 +3147,7 @@ DISPATCH = {
     "grocy_add_stock": tool_grocy_add_stock,
     "grocy_set_stock": tool_grocy_set_stock,
     "grocy_product_add": tool_grocy_product_add,
+    "grocy_move": tool_grocy_move,
     "recipe_cook": tool_recipe_cook,
     "grocy_shopping_add": tool_grocy_shopping_add,
     "toloka_add": tool_toloka_add,

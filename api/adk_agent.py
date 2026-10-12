@@ -56,8 +56,13 @@ def _recent_user_text(ctx, n: int = KEEP_USER_TURNS) -> str:
     if ctx is None:
         return ""
     session = getattr(ctx, "session", None)
-    past = [_text(e.content) for e in (session.events if session else []) if e.author == "user"]
-    return " ".join([t for t in past if t][-n:] + [_text(ctx.user_content)])
+    past = [t for t in (_text(e.content) for e in (session.events if session else []) if e.author == "user") if t]
+    current = _text(ctx.user_content)
+    # The runner appends the current message to the session before tools are picked;
+    # counted twice it pushed a real past turn out of the window ("Додай…" lost by "1 штука").
+    if past and past[-1] == current:
+        past = past[:-1]
+    return " ".join(past[-n:] + [current])
 
 
 class LegacyTool(BaseTool):

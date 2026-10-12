@@ -114,7 +114,8 @@ _CONTROL_LINES = {
     "telegram_send": ("- telegram_send: надіслати текст у Telegram — в особисті тому, хто говорить (to=me), або в сімейну "
                       "групу (to=group); якщо з прохання не ясно куди — спитай; передавай повний текст, який надсилаєш\n"),
     "grocy_add_stock": "- grocy_add_stock: додати куплене до запасів\n",
-    "grocy_product_add": "- grocy_product_add: завести НОВИЙ товар у Grocy з початковим запасом — коли grocy_add_stock каже, що товару ще нема\n",
+    "grocy_product_add": "- grocy_product_add: завести НОВИЙ товар у Grocy з початковим запасом — коли grocy_add_stock каже, що товару ще нема; якщо сказано, де лежить, — передай location\n",
+    "grocy_move": "- grocy_move: перенести товар в інше місце зберігання (шухлядка, сумка); «де лежить X» — це grocy_stock, місце вказане в дужках\n",
     "grocy_shopping_add": "- grocy_shopping_add: додати продукт до списку покупок\n",
     "web_search": "- web_search: пошук в інтернеті (свіже, новини, нові фільми) — коли користувач просить пошукати в інтернеті\n",
     "toloka_search": "- toloka_search: пошук роздач на Толоці за назвою (розмір, сідери)\n",
